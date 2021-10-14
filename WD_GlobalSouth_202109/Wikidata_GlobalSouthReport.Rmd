@@ -1,0 +1,1611 @@
+---
+title: 'Wikidata Revisions: Global South Report'
+author: "Goran S. Milovanovic, Data Scientist, WMDE"
+date: "October 13, 2021"
+output:
+  html_notebook:
+    code_folding: hide
+    theme: cosmo
+    toc: yes
+    toc_float: yes
+    toc_depth: 5
+  html_document:
+    toc: yes
+    toc_depth: 5
+---
+
+**Repo** 
+
+- [WD_GlobalSouth_202109](https://github.com/wikimedia/analytics-wmde-WD-WikidataAdHocAnalytics/tree/master/WD_GlobalSouth_202109)
+
+**Reference Phabricator tickets** 
+
+- [T291170 - Global South Contributions to Wikidata
+](https://phabricator.wikimedia.org/T291170)
+
+- [T291186 - Privacy Policy Review for Global South Wikidata edits and active editors datasets
+](https://phabricator.wikimedia.org/T291186)
+
+**Current update** 
+
+- Complete datasets as of 2021/09/30.
+
+**Feedback.** 
+
+- Feedback should be send to `goran.milovanovic_ext@wikimedia.de`. 
+
+## Summary
+
+In this Report we consider the data on (a) the number of Wikidata active editors (separately in the items namespace and all namespaces), and (b) the number of Wikidata edits (also taken separately in the items namespace and all namespaces). We analyse the data from 2020/09 to 2021/08.
+
+We contrast the data for the countries belonging to the Global North and Global South, following the [Brandt Line](https://en.wikipedia.org/wiki/Brandt_Report#The_Brandt_Line) as the operational defition of the regions.
+
+**The most important findings are:**
+
+- On the level of Global North vs Global South comparison, **the contributions to Wikidata from the countries of the Global North overally suprass those made on behalf of editors from the countries in the Global South**.
+
+- On the **fine-grained, per-country analyses**, however, we show that **the Global South has a more positive dynamics in terms of their contributions to Wikidata**: a higher percent of countries in the Global South is expanding the extent of their contributions, while a higher percent of countries in the Global North is narrowing the extent of their contributions to Wikidata. This finding was replicated for the number of active editors as well as for the number of edits made from 2020/09 to 2021/08, across all namespaces as well as in the items namespace (NS:0) separately. The analysis of the dynamics of the Wikidata contributions from the Global North and Global South show that **the Global South was more agile** in the time span of this analysis (2020/09 - 2021/08).
+
+- In our analysis we were able **to identify a number of countries whose extent of contribution to Wikidata could be considered as critical** in a sense of showing a negative dynamics over the time span (2020/09 - 2021/08) considered in this Report; those countries are singled out in the respective tables. 
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, results = 'hide'}
+# !diagnostics off
+### --- Setup
+Sys.setenv(`_R_S3_METHOD_REGISTRATION_NOTE_OVERWRITES_` = "false")
+knitr::opts_chunk$set(fig.width = 15, fig.height = 8) 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+library(tidyverse)
+options(dplyr.summarise.inform = FALSE)
+fPath <- paste0(getwd(), "/")
+analyticsDir <- paste0(fPath, "_analytics/")
+```
+
+
+## 0. Data Acquisiton
+
+**NOTE A.** The Data Acquisition code is not fully reproducible from this Report. The data are collected by running the [WD_GlobalSouth_202109.R](https://github.com/wikimedia/analytics-wmde-WD-WikidataAdHocAnalytics/blob/master/WD_GlobalSouth_202109/WD_GlobalSouth_202109.R) script from WMF Analytics Client(s), collecting the data as `.csv` files from the [WMF Data Lake](https://wikitech.wikimedia.org/wiki/Analytics/Data_Lake).
+
+**NOTE B.** The countries from the [WMF Country Protection List](https://wikitech.wikimedia.org/wiki/Analytics/Data_Lake/Edits/Geoeditors/Public#Country_Protection_List) were removed from the datasets.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+filenames <- list.files(analyticsDir)
+editors_filename <- filenames[which(grepl("editors", filenames))]
+revisions_filename <- filenames[which(grepl("edits", filenames))]
+```
+
+
+## 1. Active Editors
+
+### 1.1 Active Editors Dataset
+
+The **Active Editors** dataset presents data on the number of active editors per country.
+The datasets encompasses the following fields:
+
+- **id** - the observation ID
+- **country_code** - the country ISO 3166 alpha-2 code
+- **month** - the observation year and month in the `YYYY-MM` format
+- **active_editors** - number of active editors expressed in intervals: `1-10`, `11-20`, `21-30`, `31-40`, `41-50`, `51-60`, `61-70`, `71-80`, `81-90`, `91-100`, `> 100`
+- **active_editors_ns0** - number of active editors in the content namespaces (NS:0) expressed in intervals: `1-10`, `11-20`, `21-30`, `31-40`, `41-50`, `51-60`, `61-70`, `71-80`, `81-90`, `91-100`, `> 100`
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+data_set <- readr::read_csv(paste0(analyticsDir, editors_filename), 
+                            col_types = cols())
+colnames(data_set)[1] <- "id"
+DT::datatable(data_set)
+```
+In the next step, we enrich the **Active Editors** dataset by adding (a) country names, and (b) including information on Global North/Global South classification (see [List of countries by regional classification](https://meta.wikimedia.org/wiki/List_of_countries_by_regional_classification)). The [Brandt Line](https://en.wikipedia.org/wiki/Brandt_Report#The_Brandt_Line) was used to establish the Global North vs Global South dichotomy in cases not immediately evident from the data.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# - scrape Meta: List of countries by regional classification 
+url <- 'https://meta.wikimedia.org/wiki/List_of_countries_by_regional_classification'
+gsn_list <- htmltab::htmltab(url, 1)
+# - load ISOcodes::ISO_3166_1
+iso_codes <- ISOcodes::ISO_3166_1
+iso_codes <- iso_codes %>% 
+  dplyr::select(Alpha_2, Name)
+# - join country names
+data_set <- data_set %>% 
+  dplyr::left_join(iso_codes, 
+                   by = c("country_code" = "Alpha_2"))
+colnames(data_set)[6] <- "country_name"
+# - Country name for Kosovo (alpha-2 is "xk") 
+# - is not found in ISOcodes::ISO_3166_1, fix:
+w <- which(is.na(data_set$country_name))
+data_set$country_name[w] <- "Kosovo"
+# - join Global North/Global South
+data_set <- data_set %>% 
+  dplyr::left_join(gsn_list, 
+                   by = c("country_name" = "Country"))
+colnames(data_set)[7] <- "region"
+colnames(data_set)[8] <- "global"
+# - find unmatched countries, fix:
+w <- which(is.na(data_set$global))
+# - unique(data_set$country_name[w])
+w <- which(data_set$country_name == "Åland Islands")
+data_set$global[w] <- "Global North"
+data_set$region[w] <- "Europe"
+w <- which(data_set$country_name == "Bolivia, Plurinational State of")
+data_set$global[w] <- "Global South"
+data_set$region[w] <- "South/Latin America"
+w <- which(data_set$country_name == "Bonaire, Sint Eustatius and Saba")
+data_set$global[w] <- "Global South"
+data_set$region[w] <- "South/Latin America"
+w <- which(data_set$country_name == "Côte d'Ivoire")
+data_set$global[w] <- "Global South"
+data_set$region[w] <- "Africa"
+w <- which(data_set$country_name == "Curaçao")
+data_set$global[w] <- "Global South"
+data_set$region[w] <- "South/Latin America"
+w <- which(data_set$country_name == "Czechia")
+data_set$global[w] <- "Global North"
+data_set$region[w] <- "Europe"
+w <- which(data_set$country_name == "North Macedonia")
+data_set$global[w] <- "Global North"
+data_set$region[w] <- "Europe"
+w <- which(data_set$country_name == "Macao")
+data_set$global[w] <- "Global South"
+data_set$region[w] <- "Asia & Pacific"
+w <- which(data_set$country_name == "Palestine, State of")
+data_set$global[w] <- "Global South"
+data_set$region[w] <- "Middle east"
+w <- which(data_set$country_name == "Réunion")
+data_set$global[w] <- "Global South"
+data_set$region[w] <- "Asia & Pacific"
+w <- which(data_set$country_name == "Eswatini")
+data_set$global[w] <- "Global South"
+data_set$region[w] <- "Africa"
+w <- which(data_set$country_name == "Taiwan, Province of China")
+data_set$global[w] <- "Global North"
+data_set$region[w] <- "Asia & Pacific"
+w <- which(data_set$country_name == "Kosovo")
+data_set$global[w] <- "Global North"
+data_set$region[w] <- "Europe"
+DT::datatable(data_set)
+```
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# - keep Global North/Global South data
+country_global <- data_set %>% 
+  dplyr::select(country_code, 
+                global)
+country_global <- country_global[!duplicated(country_global), ]
+```
+
+### 1.2 Active Editors Analysis
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+n_global_north <- unique(
+  data_set$country_code[data_set$global == "Global North"]
+  )
+n_global_north <- length(n_global_north)
+n_global_south <- unique(
+  data_set$country_code[data_set$global == "Global South"]
+  )
+n_global_south <- length(n_global_south)
+```
+
+We find a total of `r n_global_north + n_global_south` countries in the analysis, of which `r n_global_north` belong to the Global North and `r n_global_south` to the Global South.
+
+#### 1.2.1 Active Editor Classes
+
+The following chart shows the percent of countries in the Global North and Global South, in each month from September 2020 to August 2021, which were found in the respective categories of user activity:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# - wrangle
+active_eds <- data_set %>% 
+  dplyr::select(global, 
+                month,
+                active_editors) %>% 
+  dplyr::group_by(global, month, active_editors) %>% 
+  dplyr::summarise(count = n()) %>% 
+  tidyr::pivot_wider(names_from = active_editors, 
+                     values_from = count, 
+                     values_fill = 0) %>%
+  tidyr::pivot_longer(!c(global, month),
+                      names_to = "active_editors",
+                      values_to = "count")
+active_eds$proportion <- ifelse(active_eds$global == "Global North", 
+                                active_eds$count/n_global_north, 
+                                active_eds$count/n_global_south)
+active_eds$percent <- round(active_eds$proportion*100, 3)
+
+# - chart
+active_eds$active_editors <- factor(active_eds$active_editors, 
+                                    levels = c("1 - 10", 
+                                               "11 - 20", 
+                                               "21 - 30",
+                                               "31 - 40", 
+                                               "41 - 50", 
+                                               "51 - 60", 
+                                               "61 - 70", 
+                                               "71 - 80", 
+                                               "81 - 90", 
+                                               "91 - 100", 
+                                               "> 100")
+                                    )
+colnames(active_eds)[3] <- "Active Editors Classes"
+ggplot2::ggplot(active_eds, 
+                aes(x = month,
+                    y = percent,
+                    group = `Active Editors Classes`,
+                    fill = `Active Editors Classes`,
+                    color = `Active Editors Classes`)) +
+  geom_line(size = .25) + 
+  geom_point() + 
+  facet_wrap(~global) + 
+  xlab("Month") + ylab("% countries") + 
+  ggtitle("Active Editors") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90)) + 
+  theme(panel.border = element_blank()) + 
+  theme(legend.title = element_text(size = 7)) +
+  theme(strip.background =  element_blank()) + 
+  theme(plot.title = element_text(size = 10, hjust = .5))
+```
+The contrast is obvious: consistently over time, most of the countries in the Global North maintain > 100 active editors monthly, while most of the countries in the Global South maintain 1 - 10. As it can be seen from the left panel in the chart, the runner-up class of active editors in Global North are the countries that maintain 1 - 10 editors monthly.
+
+The following chart shows the same data except for now we consider only editors active in the items namespace (NS:0).
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# - wrangle
+active_eds <- data_set %>% 
+  dplyr::select(global, 
+                month,
+                active_editors_ns0) %>% 
+  dplyr::group_by(global, month, active_editors_ns0) %>% 
+  dplyr::summarise(count = n()) %>% 
+  tidyr::pivot_wider(names_from = active_editors_ns0, 
+                     values_from = count, 
+                     values_fill = 0) %>%
+  tidyr::pivot_longer(!c(global, month),
+                      names_to = "active_editors_ns0",
+                      values_to = "count")
+active_eds$proportion <- ifelse(active_eds$global == "Global North", 
+                                active_eds$count/n_global_north, 
+                                active_eds$count/n_global_south)
+active_eds$percent <- round(active_eds$proportion*100, 3)
+
+# - chart
+active_eds$active_editors_ns0 <- factor(active_eds$active_editors_ns0,
+                                        levels = c("0",
+                                                   "1 - 10",
+                                                   "11 - 20",
+                                                   "21 - 30",
+                                                   "31 - 40",
+                                                   "41 - 50",
+                                                   "51 - 60",
+                                                   "61 - 70",
+                                                   "71 - 80",
+                                                   "81 - 90",
+                                                   "91 - 100",
+                                                   "> 100")
+                                        )
+colnames(active_eds)[3] <- "Active Editors Classes"
+ggplot2::ggplot(active_eds, 
+                aes(x = month,
+                    y = percent,
+                    group = `Active Editors Classes`,
+                    fill = `Active Editors Classes`,
+                    color = `Active Editors Classes`)) +
+  geom_line(size = .25) + 
+  geom_point() + 
+  facet_wrap(~global) + 
+  xlab("Month") + ylab("% countries") + 
+  ggtitle("Active Editors in the Items Namespace (NS:0)") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90)) + 
+  theme(panel.border = element_blank()) + 
+  theme(legend.title = element_text(size = 7)) +
+  theme(strip.background =  element_blank()) + 
+  theme(plot.title = element_text(size = 10, hjust = .5))
+```
+As we can see, the result is (qualitatively, and almost fully) replicated when looking into the items namespace only.
+
+#### 1.2.2 Average Active Editors Rank
+
+The active editors classes -  `1-10`, `11-20`, `21-30`, `31-40`, `41-50`, `51-60`, `61-70`, `71-80`, `81-90`, `91-100`, `> 100` - can be described as active editors ranks by assigning the rank of 11 to `> 100`, 10 to `91-100`, 9 to `81-90`, .., 1 to `1-10`. The following chart depicts the change of the average active editors rank with time for the countries of the Global North and Global South.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# - wrangle
+active_eds <- data_set %>% 
+  dplyr::select(global, 
+                month,
+                active_editors)
+active_eds$active_editors <- dplyr::recode(active_eds$active_editors, 
+                                           "1 - 10" = 1,
+                                           "11 - 20" = 2,
+                                           "21 - 30" = 3,
+                                           "31 - 40" = 4,
+                                           "41 - 50" = 5,
+                                           "51 - 60" = 6,
+                                           "61 - 70" = 7,
+                                           "71 - 80" = 8,
+                                           "81 - 90" = 9,
+                                           "91 - 100" = 10,
+                                           "> 100" = 11)
+active_eds <- active_eds %>% 
+  dplyr::select_all() %>% 
+  dplyr::group_by(global, month) %>% 
+  dplyr::summarise(average_rank = mean(active_editors), 
+                   sd = sd(active_editors))
+# - chart
+ggplot2::ggplot(active_eds, 
+                aes(x = month,
+                    y = average_rank,
+                    group = global,
+                    fill = global,
+                    color = global)) +
+  geom_bar(stat = "identity", 
+           width = .4,
+           position = position_dodge()) +
+  xlab("Month") + ylab("Average Rank") + 
+  ggtitle("Active Editors Average Rank") + 
+  scale_color_manual(values = c("darkblue", "darkorange")) +
+  scale_fill_manual(values = c("darkblue", "darkorange")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90)) + 
+  theme(panel.border = element_blank()) + 
+  theme(legend.title = element_text(size = 7)) +
+  theme(strip.background =  element_blank()) + 
+  theme(plot.title = element_text(size = 10, hjust = .5))
+```
+We can see how the countries of Global South have a lower average active editors rank, consistently in time. In the following chart we replicate the finding considering edits in the items namespace (NS:0) only.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# - wrangle
+active_eds <- data_set %>% 
+  dplyr::select(global, 
+                month,
+                active_editors_ns0)
+active_eds$active_editors_ns0 <- dplyr::recode(active_eds$active_editors_ns0,
+                                               "0" = 1,
+                                               "1 - 10" = 2,
+                                               "11 - 20" = 3,
+                                               "21 - 30" = 4,
+                                               "31 - 40" = 5,
+                                               "41 - 50" = 6,
+                                               "51 - 60" = 7,
+                                               "61 - 70" = 8,
+                                               "71 - 80" = 9,
+                                               "81 - 90" = 10,
+                                               "91 - 100" = 11,
+                                               "> 100" = 12)
+active_eds <- active_eds %>% 
+  dplyr::select_all() %>% 
+  dplyr::group_by(global, month) %>% 
+  dplyr::summarise(average_rank = mean(active_editors_ns0), 
+                   sd = sd(active_editors_ns0))
+# - chart
+ggplot2::ggplot(active_eds, 
+                aes(x = month,
+                    y = average_rank,
+                    group = global,
+                    fill = global,
+                    color = global)) +
+  geom_bar(stat = "identity", 
+           width = .4,
+           position = position_dodge()) +
+  xlab("Month") + ylab("Average Rank") + 
+  ggtitle("Active Editors Average Rank in the Items Namespace (NS:0)") + 
+  scale_color_manual(values = c("darkblue", "darkorange")) +
+  scale_fill_manual(values = c("darkblue", "darkorange")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90)) + 
+  theme(panel.border = element_blank()) + 
+  theme(legend.title = element_text(size = 7)) +
+  theme(strip.background =  element_blank()) + 
+  theme(plot.title = element_text(size = 10, hjust = .5))
+```
+#### 1.2.2 Editor Activity Monthly Change Index
+
+#### 1.2.2.1 In all namespaces
+
+Looking at each country over time, we can track the change in its editor activity in the following way. For example, a country that was in the `> 100` active editors category in September 2020 and in the `90 - 100` active editors category in October 2020 has changed its active editors rank for `-1`. *Vice versa*, the country that moved from `90 - 100` to `> 100` has changed for `+1`; the country that moved from `1 - 10` to `41 - 50` has changed for `+3`, etc. In the following chart we take the **average monthly change** - as described - **per month**, and contrast Global North vs Global South over time.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# - wrangle
+active_eds <- data_set %>% 
+  dplyr::select(country_code,
+                global, 
+                month,
+                active_editors) %>% 
+  dplyr::group_by(country_code, global, month, active_editors) %>% 
+  dplyr::mutate(count = n()) %>% 
+  tidyr::pivot_wider(names_from = active_editors, 
+                     values_from = count, 
+                     values_fill = 0) %>%
+  tidyr::pivot_longer(!c(country_code, global, month),
+                      names_to = "active_editors",
+                      values_to = "count")
+active_eds$active_editors <- factor(active_eds$active_editors,
+                                    levels = c("0",
+                                               "1 - 10",
+                                               "11 - 20",
+                                               "21 - 30",
+                                               "31 - 40",
+                                               "41 - 50",
+                                               "51 - 60",
+                                               "61 - 70",
+                                               "71 - 80",
+                                               "81 - 90",
+                                               "91 - 100",
+                                               "> 100")
+                                    )
+active_eds <- active_eds %>% 
+  dplyr::arrange(country_code, global, month, active_editors) 
+active_eds_l <- lapply(unique(active_eds$country_code), function(x) {
+  b <- lapply(unique(active_eds$global), function(y) {
+    a <- lapply(unique(active_eds$month), function(z) {
+      d <- active_eds %>% 
+        dplyr::filter(
+          country_code == x,
+          global == y, 
+          month == z
+        )
+      w <- which(d$count == 1)
+      if (length(w) == 1) {
+        d <- as.data.frame(d[w, ])
+      } else {
+        d <- data.frame(country_code = x,
+                        global = y,
+                        month = z,
+                        active_editors = 0,
+                        count = 1,
+                        stringsAsFactors = FALSE)
+      }
+    })
+    return(
+      data.table::rbindlist(a)
+    )
+  })
+  return(
+    data.table::rbindlist(b)
+  )
+})
+active_eds_l <- data.table::rbindlist(active_eds_l)
+active_eds_l <- active_eds_l %>% 
+  dplyr::arrange(country_code, global, month)
+active_eds_l$count <- NULL
+active_eds_l <- country_global %>% 
+  dplyr::left_join(active_eds_l, 
+                   by = c("country_code" = "country_code",
+                          "global" = "global"))
+ranks <- c("0",
+           "1 - 10",
+           "11 - 20",
+           "21 - 30",
+           "31 - 40",
+           "41 - 50",
+           "51 - 60",
+           "61 - 70",
+           "71 - 80",
+           "81 - 90",
+           "91 - 100",
+           "> 100")
+ranks_change <- lapply(unique(active_eds_l$country_code), function(x) {
+  d <- as.data.frame(
+    active_eds_l %>%
+      dplyr::filter(country_code == x)
+  ) %>% 
+    dplyr::arrange(month)
+  rc <- vector(mode = "numeric",
+               length = dim(d)[1]-1)
+  for (i in 2:dim(d)[1]) {
+    p1 <- which(ranks %in% d$active_editors[i-1])
+    p2 <- which(ranks %in% d$active_editors[i])
+    rc[i-1] <- p2 - p1
+  }
+  d <- d[2:dim(d)[1] , ]
+  d$rc <- rc
+  return(d)
+})
+ranks_change <- data.table::rbindlist(ranks_change)
+ranks_change_global <- ranks_change %>% 
+  dplyr::select(global, month, rc) %>% 
+  dplyr::group_by(global, month) %>% 
+  dplyr::summarise(avg_rc = mean(rc), 
+                   sd_rc = sd(rc))
+# - chart
+ggplot2::ggplot(ranks_change_global, 
+                aes(x = month,
+                    y = avg_rc,
+                    group = global,
+                    fill = global,
+                    color = global, 
+                    label = round(avg_rc, 3))) +
+  geom_line(size = .25) + 
+  geom_point() +
+  ggrepel::geom_text_repel(size = 3, 
+                           show.legend = FALSE) +
+  scale_color_manual(values = c("darkblue", "darkorange")) +
+  scale_fill_manual(values = c("darkblue", "darkorange")) +
+  xlab("Month") + ylab("Average Rank Change") + 
+  ggtitle("Active Editors: Average Rank Change\nof Active Editors Class") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90)) + 
+  theme(panel.border = element_blank()) + 
+  theme(legend.title = element_text(size = 7)) +
+  theme(strip.background =  element_blank()) + 
+  theme(plot.title = element_text(size = 10, hjust = .5))
+``` 
+There is no obvious pattern in the average rank of active editors class for either Global North or Global South countries. Both Global North and Global South countries show similar osculations over time in that respect, and thus it cannot be said that the Global South countries exhibit a pattern of positive change in that respect from this data alone.
+
+However, we have noticed *large variations* across countries in their change in the average rank of active editors class over time. A per-country, finer-grain analysis shows the following results: 
+
+- 1. Some countries of the Global South exhibited the highest (positive) change in average rank of active editors class in the previous 12 months (from 2020/09 to 2021/08, the time span of this analysis);
+- 2. Also, some other countries of the Global South are positioned at the very bottom of the list in that respect; finally,
+- 3. Most of the countries encompassed by this analysis tend to have a zero change of average rank of active editors classes. 
+
+The per-country data are given in the following table:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+ranks_change_country <- ranks_change %>% 
+  dplyr::select(country_code, global, month, rc) %>% 
+  dplyr::group_by(country_code, global) %>% 
+  dplyr::summarise(avg_rc = mean(rc)) %>% 
+  dplyr::arrange(desc(avg_rc))
+country_global_2 <- data_set %>% 
+  dplyr::select(country_code,
+                country_name,
+                global)
+country_global_2 <- country_global_2[!duplicated(country_global_2), ]
+ranks_change_country <- country_global_2 %>% 
+  dplyr::left_join(ranks_change_country, 
+                   by = c("country_code" = "country_code",
+                          "global" = "global")) %>% 
+  dplyr::arrange(desc(avg_rc))
+DT::datatable(ranks_change_country)
+```
+If we split the countries into (a) those with the *positive* change in average rank of active editors class, (b) those with the *negative* change in average rank of active editors class, and (c) those with the *zero* change in average rank of active editors class, and cross-tabulate that information with Global North vs Global South, we find out that `16.95%` of countries in the Global North and `13.54%` of countries in the Global South had an overall **negative** change in the previous twelve months, while `5.09%` of countries in the Global North and `23.96%` of countries in the Global South had an overall **positive** change in the previous twelve months.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+ranks_change_country$change_class <- sapply(ranks_change_country$avg_rc, function(x) {
+  if (x == 0) {
+    return("Zero")
+  } else if (x < 0) {
+    return("Negative")
+  } else {
+    return("Positive")
+  }
+})
+ranks_change_country_table <- as.data.frame(
+  table(ranks_change_country$global,
+        ranks_change_country$change_class)
+  )
+colnames(ranks_change_country_table) <- 
+  c("Global", "Change", "Countries")
+ranks_change_country_table$Percent <- 
+  ifelse(ranks_change_country_table$Global == "Global North", 
+         round(ranks_change_country_table$Countries/n_global_north*100, 3),
+         round(ranks_change_country_table$Countries/n_global_south*100, 3)
+  )
+ranks_change_country_table <- ranks_change_country_table %>% 
+  dplyr::arrange(Global, desc(Percent))
+DT::datatable(ranks_change_country_table)  
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+ggplot(ranks_change_country_table, 
+       aes(x = Change,
+           y = Percent,
+           color = Change, 
+           fill = Change)) +
+  geom_bar(stat = "identity", 
+           position = "stack") + 
+  facet_wrap(~Global) + 
+  xlab("Change") + ylab("% countries") + 
+  ggtitle("Active Editors") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90)) + 
+  theme(panel.border = element_blank()) + 
+  theme(legend.title = element_text(size = 7)) +
+  theme(strip.background =  element_blank()) + 
+  theme(plot.title = element_text(size = 10, hjust = .5))
+```
+
+We can conclude that a large percent (`23.96%`) of the countries in the Global South were expanding the extent of their contributions to Wikidata, in general, but also that not a small percent of them (`13.54%`) were contributing less and less in general. Taking the perspective of the Global South, the contributions from the following countries seem to be *critical* in a way; all of them had a negative change in the average rank of active editors class from 2020/09 to 2021/08:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+DT::datatable(ranks_change_country %>%
+        dplyr::filter(global == "Global South", 
+                      change_class == "Negative") %>%
+        dplyr::select(country_code, 
+                      country_name, 
+                      avg_rc) %>% 
+        dplyr::mutate(country = paste0(country_name, 
+                                       " (", 
+                                       country_code, 
+                                       ")")) %>%
+        dplyr::arrange(avg_rc) %>% 
+        dplyr::select(country, avg_rc)
+)
+```
+
+We now repeat the whole Editor Activity Monthly Change Index analysis for editor activity in the items namespace (NS:0).
+
+#### 1.2.2.2 In items (NS:0) namespace only
+
+In the following chart we take the **average monthly change** - as described - **per month**, and contrast Global North vs Global South over time, for active editors in the **items (NS:0) namespace only**.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# - wrangle
+active_eds <- data_set %>% 
+  dplyr::select(country_code,
+                global, 
+                month,
+                active_editors_ns0) %>% 
+  dplyr::group_by(country_code, global, month, active_editors_ns0) %>% 
+  dplyr::mutate(count = n()) %>% 
+  tidyr::pivot_wider(names_from = active_editors_ns0, 
+                     values_from = count, 
+                     values_fill = 0) %>%
+  tidyr::pivot_longer(!c(country_code, global, month),
+                      names_to = "active_editors_ns0",
+                      values_to = "count")
+active_eds$active_editors_ns0 <- factor(active_eds$active_editors_ns0,
+                                    levels = c("0",
+                                               "1 - 10",
+                                               "11 - 20",
+                                               "21 - 30",
+                                               "31 - 40",
+                                               "41 - 50",
+                                               "51 - 60",
+                                               "61 - 70",
+                                               "71 - 80",
+                                               "81 - 90",
+                                               "91 - 100",
+                                               "> 100")
+                                    )
+active_eds <- active_eds %>% 
+  dplyr::arrange(country_code, global, month, active_editors_ns0) 
+active_eds_l <- lapply(unique(active_eds$country_code), function(x) {
+  b <- lapply(unique(active_eds$global), function(y) {
+    a <- lapply(unique(active_eds$month), function(z) {
+      d <- active_eds %>% 
+        dplyr::filter(
+          country_code == x,
+          global == y, 
+          month == z
+        )
+      w <- which(d$count == 1)
+      if (length(w) == 1) {
+        d <- as.data.frame(d[w, ])
+      } else {
+        d <- data.frame(country_code = x,
+                        global = y,
+                        month = z,
+                        active_editors_ns0 = 0,
+                        count = 1,
+                        stringsAsFactors = FALSE)
+      }
+    })
+    return(
+      data.table::rbindlist(a)
+    )
+  })
+  return(
+    data.table::rbindlist(b)
+  )
+})
+active_eds_l <- data.table::rbindlist(active_eds_l)
+active_eds_l <- active_eds_l %>% 
+  dplyr::arrange(country_code, global, month)
+active_eds_l$count <- NULL
+active_eds_l <- country_global %>% 
+  dplyr::left_join(active_eds_l, 
+                   by = c("country_code" = "country_code",
+                          "global" = "global"))
+ranks <- c("0",
+           "1 - 10",
+           "11 - 20",
+           "21 - 30",
+           "31 - 40",
+           "41 - 50",
+           "51 - 60",
+           "61 - 70",
+           "71 - 80",
+           "81 - 90",
+           "91 - 100",
+           "> 100")
+ranks_change <- lapply(unique(active_eds_l$country_code), function(x) {
+  d <- as.data.frame(
+    active_eds_l %>%
+      dplyr::filter(country_code == x)
+  ) %>% 
+    dplyr::arrange(month)
+  rc <- vector(mode = "numeric",
+               length = dim(d)[1]-1)
+  for (i in 2:dim(d)[1]) {
+    p1 <- which(ranks %in% d$active_editors_ns0[i-1])
+    p2 <- which(ranks %in% d$active_editors_ns0[i])
+    rc[i-1] <- p2 - p1
+  }
+  d <- d[2:dim(d)[1] , ]
+  d$rc <- rc
+  return(d)
+})
+ranks_change <- data.table::rbindlist(ranks_change)
+ranks_change_global <- ranks_change %>% 
+  dplyr::select(global, month, rc) %>% 
+  dplyr::group_by(global, month) %>% 
+  dplyr::summarise(avg_rc = mean(rc), 
+                   sd_rc = sd(rc))
+# - chart
+ggplot2::ggplot(ranks_change_global, 
+                aes(x = month,
+                    y = avg_rc,
+                    group = global,
+                    fill = global,
+                    color = global, 
+                    label = round(avg_rc, 3))) +
+  geom_line(size = .25) + 
+  geom_point() +
+  ggrepel::geom_text_repel(size = 3, 
+                           show.legend = FALSE) +
+  scale_color_manual(values = c("darkblue", "darkorange")) +
+  scale_fill_manual(values = c("darkblue", "darkorange")) +
+  xlab("Month") + ylab("Average Rank Change") + 
+  ggtitle("Active Editors in the Items Namespace (NS:0): Average Rank Change\nof Active Editors Class") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90)) + 
+  theme(panel.border = element_blank()) + 
+  theme(legend.title = element_text(size = 7)) +
+  theme(strip.background =  element_blank()) + 
+  theme(plot.title = element_text(size = 10, hjust = .5))
+``` 
+Again, no obvious pattern emerges from the analysis of the aggregated data. Now we take a dive into the per-country analysis.
+
+The per-country data are given in the following table:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+ranks_change_country <- ranks_change %>% 
+  dplyr::select(country_code, global, month, rc) %>% 
+  dplyr::group_by(country_code, global) %>% 
+  dplyr::summarise(avg_rc = mean(rc)) %>% 
+  dplyr::arrange(desc(avg_rc))
+country_global_2 <- data_set %>% 
+  dplyr::select(country_code,
+                country_name,
+                global)
+country_global_2 <- country_global_2[!duplicated(country_global_2), ]
+ranks_change_country <- country_global_2 %>% 
+  dplyr::left_join(ranks_change_country, 
+                   by = c("country_code" = "country_code",
+                          "global" = "global")) %>% 
+  dplyr::arrange(desc(avg_rc))
+DT::datatable(ranks_change_country)
+```
+
+Again, split the countries into (a) those with the *positive* change in average rank of active editors class, (b) those with the *negative* change in average rank of active editors class, and (c) those with the *zero* change in average rank of active editors class, and cross-tabulate that information with Global North vs Global South:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+ranks_change_country$change_class <- sapply(ranks_change_country$avg_rc, function(x) {
+  if (x == 0) {
+    return("Zero")
+  } else if (x < 0) {
+    return("Negative")
+  } else {
+    return("Positive")
+  }
+})
+ranks_change_country_table <- as.data.frame(
+  table(ranks_change_country$global,
+        ranks_change_country$change_class)
+  )
+colnames(ranks_change_country_table) <- 
+  c("Global", "Change", "Countries")
+ranks_change_country_table$Percent <- 
+  ifelse(ranks_change_country_table$Global == "Global North", 
+         round(ranks_change_country_table$Countries/n_global_north*100, 3),
+         round(ranks_change_country_table$Countries/n_global_south*100, 3)
+  )
+ranks_change_country_table <- ranks_change_country_table %>% 
+  dplyr::arrange(Global, desc(Percent))
+DT::datatable(ranks_change_country_table)  
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+ggplot(ranks_change_country_table, 
+       aes(x = Change,
+           y = Percent,
+           color = Change, 
+           fill = Change)) +
+  geom_bar(stat = "identity", 
+           position = "stack") + 
+  facet_wrap(~Global) + 
+  xlab("Change") + ylab("% countries") + 
+  ggtitle("Active Editors in the Items Namespace (NS:0)") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90)) + 
+  theme(panel.border = element_blank()) + 
+  theme(legend.title = element_text(size = 7)) +
+  theme(strip.background =  element_blank()) + 
+  theme(plot.title = element_text(size = 10, hjust = .5))
+```
+
+The results in the items namespace are quite similar to those from all namespaces. The list of countries in the Global South with the highest **negative** change in the average rank of active editors class from 2020/09 to 2021/08 **in the items (NS:0) namespace** follows.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+DT::datatable(ranks_change_country %>%
+        dplyr::filter(global == "Global South", 
+                      change_class == "Negative") %>%
+        dplyr::select(country_code, 
+                      country_name, 
+                      avg_rc) %>% 
+        dplyr::mutate(country = paste0(country_name, 
+                                       " (", 
+                                       country_code, 
+                                       ")")) %>%
+        dplyr::arrange(avg_rc) %>% 
+        dplyr::select(country, avg_rc)
+)
+```
+
+## 2. Edits
+
+### 2.1 Edits Dataset
+
+The **Edits** dataset presents data on the number of revisions made per country.
+The datasets encompasses the following fields:
+
+- **id** - the observation ID
+- **country_code** - the country ISO 3166 alpha-2 code
+- **month** - the observation year and month in the `YYYY-MM` format
+- **edits** - number of active editors expressed in intervals: `1-100`, `101-200`, `201-300`, `301-400`, `401-500`, `501-600`, `601-700`, `701-800`, `801-900`, `901-1000`, `> 1000`
+- **edits_ns0** - number of active editors in the content namespaces (NS:0) expressed in intervals:  `1-100`, `101-200`, `201-300`, `301-400`, `401-500`, `501-600`, `601-700`, `701-800`, `801-900`, `901-1000`, `> 1000`
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+data_set <- readr::read_csv(paste0(analyticsDir, revisions_filename), 
+                            col_types = cols())
+colnames(data_set)[1] <- "id"
+DT::datatable(data_set)
+```
+In the next step, we enrich the **Editors** dataset by adding (a) country names, and (b) including information on Global North/Global South classification (see [List of countries by regional classification](https://meta.wikimedia.org/wiki/List_of_countries_by_regional_classification)). The [Brandt Line](https://en.wikipedia.org/wiki/Brandt_Report#The_Brandt_Line) was used to establish the Global North vs Global South dichotomy in cases not immediately evident from the data.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# - scrape Meta: List of countries by regional classification 
+url <- 'https://meta.wikimedia.org/wiki/List_of_countries_by_regional_classification'
+gsn_list <- htmltab::htmltab(url, 1)
+# - load ISOcodes::ISO_3166_1
+iso_codes <- ISOcodes::ISO_3166_1
+iso_codes <- iso_codes %>% 
+  dplyr::select(Alpha_2, Name)
+# - join country names
+data_set <- data_set %>% 
+  dplyr::left_join(iso_codes, 
+                   by = c("country_code" = "Alpha_2"))
+colnames(data_set)[6] <- "country_name"
+# - Country name for Kosovo (alpha-2 is "xk") 
+# - is not found in ISOcodes::ISO_3166_1, fix:
+w <- which(is.na(data_set$country_name))
+data_set$country_name[w] <- "Kosovo"
+# - join Global North/Global South
+data_set <- data_set %>% 
+  dplyr::left_join(gsn_list, 
+                   by = c("country_name" = "Country"))
+colnames(data_set)[7] <- "region"
+colnames(data_set)[8] <- "global"
+# - find unmatched countries, fix:
+w <- which(is.na(data_set$global))
+# - unique(data_set$country_name[w])
+w <- which(data_set$country_name == "Åland Islands")
+data_set$global[w] <- "Global North"
+data_set$region[w] <- "Europe"
+w <- which(data_set$country_name == "Bolivia, Plurinational State of")
+data_set$global[w] <- "Global South"
+data_set$region[w] <- "South/Latin America"
+w <- which(data_set$country_name == "Bonaire, Sint Eustatius and Saba")
+data_set$global[w] <- "Global South"
+data_set$region[w] <- "South/Latin America"
+w <- which(data_set$country_name == "Côte d'Ivoire")
+data_set$global[w] <- "Global South"
+data_set$region[w] <- "Africa"
+w <- which(data_set$country_name == "Curaçao")
+data_set$global[w] <- "Global South"
+data_set$region[w] <- "South/Latin America"
+w <- which(data_set$country_name == "Czechia")
+data_set$global[w] <- "Global North"
+data_set$region[w] <- "Europe"
+w <- which(data_set$country_name == "North Macedonia")
+data_set$global[w] <- "Global North"
+data_set$region[w] <- "Europe"
+w <- which(data_set$country_name == "Macao")
+data_set$global[w] <- "Global South"
+data_set$region[w] <- "Asia & Pacific"
+w <- which(data_set$country_name == "Palestine, State of")
+data_set$global[w] <- "Global South"
+data_set$region[w] <- "Middle east"
+w <- which(data_set$country_name == "Réunion")
+data_set$global[w] <- "Global South"
+data_set$region[w] <- "Asia & Pacific"
+w <- which(data_set$country_name == "Eswatini")
+data_set$global[w] <- "Global South"
+data_set$region[w] <- "Africa"
+w <- which(data_set$country_name == "Taiwan, Province of China")
+data_set$global[w] <- "Global North"
+data_set$region[w] <- "Asia & Pacific"
+w <- which(data_set$country_name == "Kosovo")
+data_set$global[w] <- "Global North"
+data_set$region[w] <- "Europe"
+w <- which(data_set$country_name == "Saint Barthélemy")
+data_set$global[w] <- "Global South"
+data_set$region[w] <- "South/Latin America"
+w <- which(data_set$country_name == "Cabo Verde")
+data_set$global[w] <- "Global South"
+data_set$region[w] <- "Africa"
+w <- which(data_set$country_name == "Sint Maarten (Dutch part)")
+data_set$global[w] <- "Global South"
+data_set$region[w] <- "South/Latin America"
+DT::datatable(data_set)
+```
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# - keep Global North/Global South data
+country_global <- data_set %>% 
+  dplyr::select(country_code, 
+                global)
+country_global <- country_global[!duplicated(country_global), ]
+```
+
+### 2.2 Edits Analysis
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+n_global_north <- unique(
+  data_set$country_code[data_set$global == "Global North"]
+  )
+n_global_north <- length(n_global_north)
+n_global_south <- unique(
+  data_set$country_code[data_set$global == "Global South"]
+  )
+n_global_south <- length(n_global_south)
+```
+
+We find a total of `r n_global_north + n_global_south` countries in the analysis, of which `r n_global_north` belong to the Global North and `r n_global_south` to the Global South.
+
+#### 2.2.1 Edit Classes
+
+The following chart shows the percent of countries in the Global North and Global South, in each month from September 2020 to August 2021, which were found in the respective edit categories:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# - wrangle
+active_eds <- data_set %>% 
+  dplyr::select(global, 
+                month,
+                edits) %>% 
+  dplyr::group_by(global, month, edits) %>% 
+  dplyr::summarise(count = n()) %>% 
+  tidyr::pivot_wider(names_from = edits, 
+                     values_from = count, 
+                     values_fill = 0) %>%
+  tidyr::pivot_longer(!c(global, month),
+                      names_to = "edits",
+                      values_to = "count")
+active_eds$proportion <- ifelse(active_eds$global == "Global North", 
+                                active_eds$count/n_global_north, 
+                                active_eds$count/n_global_south)
+active_eds$percent <- round(active_eds$proportion*100, 3)
+
+# - chart
+active_eds$edits <- factor(active_eds$edits, 
+                                    levels = c("0",
+                                               "1 - 100", 
+                                               "101 - 200", 
+                                               "201 - 300",
+                                               "301 - 400", 
+                                               "401 - 500", 
+                                               "501 - 600", 
+                                               "601 - 700", 
+                                               "701 - 800", 
+                                               "801 - 900", 
+                                               "901 - 1000", 
+                                               "> 1000")
+                                    )
+colnames(active_eds)[3] <- "Edit Classes"
+ggplot2::ggplot(active_eds, 
+                aes(x = month,
+                    y = percent,
+                    group = `Edit Classes`,
+                    fill = `Edit Classes`,
+                    color = `Edit Classes`)) +
+  geom_line(size = .25) + 
+  geom_point() + 
+  facet_wrap(~global) + 
+  xlab("Month") + ylab("% countries") + 
+  ggtitle("Edits") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90)) + 
+  theme(panel.border = element_blank()) + 
+  theme(legend.title = element_text(size = 7)) +
+  theme(strip.background =  element_blank()) + 
+  theme(plot.title = element_text(size = 10, hjust = .5))
+```
+
+The result qualitatively replicates the finding obtained from the respective analysis of active editor classes. 
+
+The following chart shows the same data except for now we consider only edits made in the items namespace (NS:0).
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# - wrangle
+active_eds <- data_set %>% 
+  dplyr::select(global, 
+                month,
+                edits_ns0) %>% 
+  dplyr::group_by(global, month, edits_ns0) %>% 
+  dplyr::summarise(count = n()) %>% 
+  tidyr::pivot_wider(names_from = edits_ns0, 
+                     values_from = count, 
+                     values_fill = 0) %>%
+  tidyr::pivot_longer(!c(global, month),
+                      names_to = "edits_ns0",
+                      values_to = "count")
+active_eds$proportion <- ifelse(active_eds$global == "Global North", 
+                                active_eds$count/n_global_north, 
+                                active_eds$count/n_global_south)
+active_eds$percent <- round(active_eds$proportion*100, 3)
+
+# - chart
+active_eds$edits_ns0 <- factor(active_eds$edits_ns0,
+                                        levels = c("0",
+                                               "1 - 100", 
+                                               "101 - 200", 
+                                               "201 - 300",
+                                               "301 - 400", 
+                                               "401 - 500", 
+                                               "501 - 600", 
+                                               "601 - 700", 
+                                               "701 - 800", 
+                                               "801 - 900", 
+                                               "901 - 1000", 
+                                               "> 1000")
+                                    )
+colnames(active_eds)[3] <- "Edit Classes"
+ggplot2::ggplot(active_eds, 
+                aes(x = month,
+                    y = percent,
+                    group = `Edit Classes`,
+                    fill = `Edit Classes`,
+                    color = `Edit Classes`)) +
+  geom_line(size = .25) + 
+  geom_point() + 
+  facet_wrap(~global) + 
+  xlab("Month") + ylab("% countries") + 
+  ggtitle("Edits in the Items Namespace (NS:0)") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90)) + 
+  theme(panel.border = element_blank()) + 
+  theme(legend.title = element_text(size = 7)) +
+  theme(strip.background =  element_blank()) + 
+  theme(plot.title = element_text(size = 10, hjust = .5))
+```
+As we can see, the result is (qualitatively, and almost fully) replicated when looking into the items namespace only.
+
+#### 2.2.2 Average Edits Rank
+
+The analysis follows the same logic as explained in section **1.2.2** except for the difference in the intervals used for the edit classes.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# - wrangle
+active_eds <- data_set %>% 
+  dplyr::select(global, 
+                month,
+                edits)
+active_eds$edits <- dplyr::recode(active_eds$edits, 
+                                           "0" = 1,
+                                           "1 - 100" = 2,
+                                           "101 - 200" = 3,
+                                           "201 - 300" = 4,
+                                           "301 - 400" = 5,
+                                           "401 - 500" = 6,
+                                           "501 - 600" = 7,
+                                           "601 - 700" = 8,
+                                           "701 - 800" = 9,
+                                           "801 - 900" = 10,
+                                           "901 - 1000" = 11,
+                                           "> 1000" = 12)
+active_eds <- active_eds %>% 
+  dplyr::select_all() %>% 
+  dplyr::group_by(global, month) %>% 
+  dplyr::summarise(average_rank = mean(edits), 
+                   sd = sd(edits))
+# - chart
+ggplot2::ggplot(active_eds, 
+                aes(x = month,
+                    y = average_rank,
+                    group = global,
+                    fill = global,
+                    color = global)) +
+  geom_bar(stat = "identity", 
+           width = .4,
+           position = position_dodge()) +
+  xlab("Month") + ylab("Average Rank") + 
+  ggtitle("Edits Average Rank") + 
+  scale_color_manual(values = c("darkblue", "darkorange")) +
+  scale_fill_manual(values = c("darkblue", "darkorange")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90)) + 
+  theme(panel.border = element_blank()) + 
+  theme(legend.title = element_text(size = 7)) +
+  theme(strip.background =  element_blank()) + 
+  theme(plot.title = element_text(size = 10, hjust = .5))
+```
+In the following chart we replicate the finding considering edits in the items namespace (NS:0) only.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# - wrangle
+active_eds <- data_set %>% 
+  dplyr::select(global, 
+                month,
+                edits_ns0)
+active_eds$edits_ns0 <- dplyr::recode(active_eds$edits_ns0,
+                                               "0" = 1,
+                                               "1 - 100" = 2,
+                                               "101 - 200" = 3,
+                                               "201 - 300" = 4,
+                                               "301 - 400" = 5,
+                                               "401 - 500" = 6,
+                                               "501 - 600" = 7,
+                                               "601 - 700" = 8,
+                                               "701 - 800" = 9,
+                                               "801 - 900" = 10,
+                                               "901 - 1000" = 11,
+                                               "> 1000" = 12)
+active_eds <- active_eds %>% 
+  dplyr::select_all() %>% 
+  dplyr::group_by(global, month) %>% 
+  dplyr::summarise(average_rank = mean(edits_ns0), 
+                   sd = sd(edits_ns0))
+# - chart
+ggplot2::ggplot(active_eds, 
+                aes(x = month,
+                    y = average_rank,
+                    group = global,
+                    fill = global,
+                    color = global)) +
+  geom_bar(stat = "identity", 
+           width = .4,
+           position = position_dodge()) +
+  xlab("Month") + ylab("Average Rank") + 
+  ggtitle("Edits Average Rank in the Items Namespace (NS:0)") + 
+  scale_color_manual(values = c("darkblue", "darkorange")) +
+  scale_fill_manual(values = c("darkblue", "darkorange")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90)) + 
+  theme(panel.border = element_blank()) + 
+  theme(legend.title = element_text(size = 7)) +
+  theme(strip.background =  element_blank()) + 
+  theme(plot.title = element_text(size = 10, hjust = .5))
+```
+#### 2.2.2 Editor Activity Monthly Change Index
+
+#### 2.2.2.1 In all namespaces
+
+Again, the analysis follows the same logic is exemplified in the respective analysis of the active editors data.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# - wrangle
+active_eds <- data_set %>% 
+  dplyr::select(country_code,
+                global, 
+                month,
+                edits) %>% 
+  dplyr::group_by(country_code, global, month, edits) %>% 
+  dplyr::mutate(count = n()) %>% 
+  tidyr::pivot_wider(names_from = edits, 
+                     values_from = count, 
+                     values_fill = 0) %>%
+  tidyr::pivot_longer(!c(country_code, global, month),
+                      names_to = "edits",
+                      values_to = "count")
+active_eds$edits <- factor(active_eds$edits,
+                                    levels = c("0",
+                                               "1 - 100", 
+                                               "101 - 200", 
+                                               "201 - 300",
+                                               "301 - 400", 
+                                               "401 - 500", 
+                                               "501 - 600", 
+                                               "601 - 700", 
+                                               "701 - 800", 
+                                               "801 - 900", 
+                                               "901 - 1000", 
+                                               "> 1000")
+                                    )
+active_eds <- active_eds %>% 
+  dplyr::arrange(country_code, global, month, edits) 
+active_eds_l <- lapply(unique(active_eds$country_code), function(x) {
+  b <- lapply(unique(active_eds$global), function(y) {
+    a <- lapply(unique(active_eds$month), function(z) {
+      d <- active_eds %>% 
+        dplyr::filter(
+          country_code == x,
+          global == y, 
+          month == z
+        )
+      w <- which(d$count == 1)
+      if (length(w) == 1) {
+        d <- as.data.frame(d[w, ])
+      } else {
+        d <- data.frame(country_code = x,
+                        global = y,
+                        month = z,
+                        edits = 0,
+                        count = 1,
+                        stringsAsFactors = FALSE)
+      }
+    })
+    return(
+      data.table::rbindlist(a)
+    )
+  })
+  return(
+    data.table::rbindlist(b)
+  )
+})
+active_eds_l <- data.table::rbindlist(active_eds_l)
+active_eds_l <- active_eds_l %>% 
+  dplyr::arrange(country_code, global, month)
+active_eds_l$count <- NULL
+active_eds_l <- country_global %>% 
+  dplyr::left_join(active_eds_l, 
+                   by = c("country_code" = "country_code",
+                          "global" = "global"))
+ranks <- c("0",
+           "1 - 100",
+           "101 - 200",
+           "201 - 300",
+           "301 - 400",
+           "401 - 500",
+           "501 - 600",
+           "601 - 700",
+           "701 - 800",
+           "801 - 900",
+           "901 - 1000",
+           "> 1000")
+ranks_change <- lapply(unique(active_eds_l$country_code), function(x) {
+  d <- as.data.frame(
+    active_eds_l %>%
+      dplyr::filter(country_code == x)
+  ) %>% 
+    dplyr::arrange(month)
+  rc <- vector(mode = "numeric",
+               length = dim(d)[1]-1)
+  for (i in 2:dim(d)[1]) {
+    p1 <- which(ranks %in% d$edits[i-1])
+    p2 <- which(ranks %in% d$edits[i])
+    rc[i-1] <- p2 - p1
+  }
+  d <- d[2:dim(d)[1] , ]
+  d$rc <- rc
+  return(d)
+})
+ranks_change <- data.table::rbindlist(ranks_change)
+ranks_change_global <- ranks_change %>% 
+  dplyr::select(global, month, rc) %>% 
+  dplyr::group_by(global, month) %>% 
+  dplyr::summarise(avg_rc = mean(rc), 
+                   sd_rc = sd(rc))
+# - chart
+ggplot2::ggplot(ranks_change_global, 
+                aes(x = month,
+                    y = avg_rc,
+                    group = global,
+                    fill = global,
+                    color = global, 
+                    label = round(avg_rc, 3))) +
+  geom_line(size = .25) + 
+  geom_point() +
+  ggrepel::geom_text_repel(size = 3, 
+                           show.legend = FALSE) +
+  scale_color_manual(values = c("darkblue", "darkorange")) +
+  scale_fill_manual(values = c("darkblue", "darkorange")) +
+  xlab("Month") + ylab("Average Rank Change") + 
+  ggtitle("Edits: Average Rank Change\nof Edit Class") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90)) + 
+  theme(panel.border = element_blank()) + 
+  theme(legend.title = element_text(size = 7)) +
+  theme(strip.background =  element_blank()) + 
+  theme(plot.title = element_text(size = 10, hjust = .5))
+``` 
+Again, no obvious pattern is present in the analysis of aggregate data. We take a look at per-country data now:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+ranks_change_country <- ranks_change %>% 
+  dplyr::select(country_code, global, month, rc) %>% 
+  dplyr::group_by(country_code, global) %>% 
+  dplyr::summarise(avg_rc = mean(rc)) %>% 
+  dplyr::arrange(desc(avg_rc))
+country_global_2 <- data_set %>% 
+  dplyr::select(country_code,
+                country_name,
+                global)
+country_global_2 <- country_global_2[!duplicated(country_global_2), ]
+ranks_change_country <- country_global_2 %>% 
+  dplyr::left_join(ranks_change_country, 
+                   by = c("country_code" = "country_code",
+                          "global" = "global")) %>% 
+  dplyr::arrange(desc(avg_rc))
+DT::datatable(ranks_change_country)
+```
+
+Now we split the countries into (a) those with the *positive* change in average rank of active editors class, (b) those with the *negative* change in average rank of active editors class, and (c) those with the *zero* change in average rank of active editors class, and cross-tabulate that information with Global North vs Global South:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+ranks_change_country$change_class <- sapply(ranks_change_country$avg_rc, function(x) {
+  if (x == 0) {
+    return("Zero")
+  } else if (x < 0) {
+    return("Negative")
+  } else {
+    return("Positive")
+  }
+})
+ranks_change_country_table <- as.data.frame(
+  table(ranks_change_country$global,
+        ranks_change_country$change_class)
+  )
+colnames(ranks_change_country_table) <- 
+  c("Global", "Change", "Countries")
+ranks_change_country_table$Percent <- 
+  ifelse(ranks_change_country_table$Global == "Global North", 
+         round(ranks_change_country_table$Countries/n_global_north*100, 3),
+         round(ranks_change_country_table$Countries/n_global_south*100, 3)
+  )
+ranks_change_country_table <- ranks_change_country_table %>% 
+  dplyr::arrange(Global, desc(Percent))
+DT::datatable(ranks_change_country_table)  
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+ggplot(ranks_change_country_table, 
+       aes(x = Change,
+           y = Percent,
+           color = Change, 
+           fill = Change)) +
+  geom_bar(stat = "identity", 
+           position = "stack") + 
+  facet_wrap(~Global) + 
+  xlab("Change") + ylab("% countries") + 
+  ggtitle("Edits") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90)) + 
+  theme(panel.border = element_blank()) + 
+  theme(legend.title = element_text(size = 7)) +
+  theme(strip.background =  element_blank()) + 
+  theme(plot.title = element_text(size = 10, hjust = .5))
+```
+
+Taking the perspective of the Global South, the contributions from the following countries seem to be *critical* in a way; all of them had a negative change in the average rank of edit class from 2020/09 to 2021/08:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+DT::datatable(ranks_change_country %>%
+        dplyr::filter(global == "Global South", 
+                      change_class == "Negative") %>%
+        dplyr::select(country_code, 
+                      country_name, 
+                      avg_rc) %>% 
+        dplyr::mutate(country = paste0(country_name, 
+                                       " (", 
+                                       country_code, 
+                                       ")")) %>%
+        dplyr::arrange(avg_rc) %>% 
+        dplyr::select(country, avg_rc)
+)
+```
+
+We now repeat the whole Edits Monthly Change Index analysis for edits in the items namespace (NS:0).
+
+#### 2.2.2.2 In items (NS:0) namespace only
+
+In the following chart we take the **average monthly change** - as described - **per month**, and contrast Global North vs Global South over time, for active editors in the **items (NS:0) namespace only**.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# - wrangle
+active_eds <- data_set %>% 
+  dplyr::select(country_code,
+                global, 
+                month,
+                edits_ns0) %>% 
+  dplyr::group_by(country_code, global, month, edits_ns0) %>% 
+  dplyr::mutate(count = n()) %>% 
+  tidyr::pivot_wider(names_from = edits_ns0, 
+                     values_from = count, 
+                     values_fill = 0) %>%
+  tidyr::pivot_longer(!c(country_code, global, month),
+                      names_to = "edits_ns0",
+                      values_to = "count")
+active_eds$edits_ns0 <- factor(active_eds$edits_ns0,
+                                    levels = c("0",
+                                               "1 - 100", 
+                                               "101 - 200", 
+                                               "201 - 300",
+                                               "301 - 400", 
+                                               "401 - 500", 
+                                               "501 - 600", 
+                                               "601 - 700", 
+                                               "701 - 800", 
+                                               "801 - 900", 
+                                               "901 - 1000", 
+                                               "> 1000")
+                                    )
+active_eds <- active_eds %>% 
+  dplyr::arrange(country_code, global, month, edits_ns0) 
+active_eds_l <- lapply(unique(active_eds$country_code), function(x) {
+  b <- lapply(unique(active_eds$global), function(y) {
+    a <- lapply(unique(active_eds$month), function(z) {
+      d <- active_eds %>% 
+        dplyr::filter(
+          country_code == x,
+          global == y, 
+          month == z
+        )
+      w <- which(d$count == 1)
+      if (length(w) == 1) {
+        d <- as.data.frame(d[w, ])
+      } else {
+        d <- data.frame(country_code = x,
+                        global = y,
+                        month = z,
+                        edits_ns0 = 0,
+                        count = 1,
+                        stringsAsFactors = FALSE)
+      }
+    })
+    return(
+      data.table::rbindlist(a)
+    )
+  })
+  return(
+    data.table::rbindlist(b)
+  )
+})
+active_eds_l <- data.table::rbindlist(active_eds_l)
+active_eds_l <- active_eds_l %>% 
+  dplyr::arrange(country_code, global, month)
+active_eds_l$count <- NULL
+active_eds_l <- country_global %>% 
+  dplyr::left_join(active_eds_l, 
+                   by = c("country_code" = "country_code",
+                          "global" = "global"))
+ranks <- c("0",
+           "1 - 100",
+           "101 - 200",
+           "201 - 300",
+           "301 - 400",
+           "401 - 500",
+           "501 - 600",
+           "601 - 700",
+           "701 - 800",
+           "801 - 900",
+           "901 - 1000",
+           "> 1000")
+ranks_change <- lapply(unique(active_eds_l$country_code), function(x) {
+  d <- as.data.frame(
+    active_eds_l %>%
+      dplyr::filter(country_code == x)
+  ) %>% 
+    dplyr::arrange(month)
+  rc <- vector(mode = "numeric",
+               length = dim(d)[1]-1)
+  for (i in 2:dim(d)[1]) {
+    p1 <- which(ranks %in% d$edits_ns0[i-1])
+    p2 <- which(ranks %in% d$edits_ns0[i])
+    rc[i-1] <- p2 - p1
+  }
+  d <- d[2:dim(d)[1] , ]
+  d$rc <- rc
+  return(d)
+})
+ranks_change <- data.table::rbindlist(ranks_change)
+ranks_change_global <- ranks_change %>% 
+  dplyr::select(global, month, rc) %>% 
+  dplyr::group_by(global, month) %>% 
+  dplyr::summarise(avg_rc = mean(rc), 
+                   sd_rc = sd(rc))
+# - chart
+ggplot2::ggplot(ranks_change_global, 
+                aes(x = month,
+                    y = avg_rc,
+                    group = global,
+                    fill = global,
+                    color = global, 
+                    label = round(avg_rc, 3))) +
+  geom_line(size = .25) + 
+  geom_point() +
+  ggrepel::geom_text_repel(size = 3, 
+                           show.legend = FALSE) +
+  scale_color_manual(values = c("darkblue", "darkorange")) +
+  scale_fill_manual(values = c("darkblue", "darkorange")) +
+  xlab("Month") + ylab("Average Rank Change") + 
+  ggtitle("Edits in the Items Namespace (NS:0): Average Rank Change\nof Edit Class") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90)) + 
+  theme(panel.border = element_blank()) + 
+  theme(legend.title = element_text(size = 7)) +
+  theme(strip.background =  element_blank()) + 
+  theme(plot.title = element_text(size = 10, hjust = .5))
+``` 
+Again, no obvious pattern emerges from the analysis of the aggregated data.
+The per-country data are given in the following table:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+ranks_change_country <- ranks_change %>% 
+  dplyr::select(country_code, global, month, rc) %>% 
+  dplyr::group_by(country_code, global) %>% 
+  dplyr::summarise(avg_rc = mean(rc)) %>% 
+  dplyr::arrange(desc(avg_rc))
+country_global_2 <- data_set %>% 
+  dplyr::select(country_code,
+                country_name,
+                global)
+country_global_2 <- country_global_2[!duplicated(country_global_2), ]
+ranks_change_country <- country_global_2 %>% 
+  dplyr::left_join(ranks_change_country, 
+                   by = c("country_code" = "country_code",
+                          "global" = "global")) %>% 
+  dplyr::arrange(desc(avg_rc))
+DT::datatable(ranks_change_country)
+```
+
+Again, split the countries into (a) those with the *positive* change in average rank of active editors class, (b) those with the *negative* change in average rank of active editors class, and (c) those with the *zero* change in average rank of active editors class, and cross-tabulate that information with Global North vs Global South:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+ranks_change_country$change_class <- sapply(ranks_change_country$avg_rc, function(x) {
+  if (x == 0) {
+    return("Zero")
+  } else if (x < 0) {
+    return("Negative")
+  } else {
+    return("Positive")
+  }
+})
+ranks_change_country_table <- as.data.frame(
+  table(ranks_change_country$global,
+        ranks_change_country$change_class)
+  )
+colnames(ranks_change_country_table) <- 
+  c("Global", "Change", "Countries")
+ranks_change_country_table$Percent <- 
+  ifelse(ranks_change_country_table$Global == "Global North", 
+         round(ranks_change_country_table$Countries/n_global_north*100, 3),
+         round(ranks_change_country_table$Countries/n_global_south*100, 3)
+  )
+ranks_change_country_table <- ranks_change_country_table %>% 
+  dplyr::arrange(Global, desc(Percent))
+DT::datatable(ranks_change_country_table)  
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+ggplot(ranks_change_country_table, 
+       aes(x = Change,
+           y = Percent,
+           color = Change, 
+           fill = Change)) +
+  geom_bar(stat = "identity", 
+           position = "stack") + 
+  facet_wrap(~Global) + 
+  xlab("Change") + ylab("% countries") + 
+  ggtitle("Edits in the Items Namespace (NS:0)") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90)) + 
+  theme(panel.border = element_blank()) + 
+  theme(legend.title = element_text(size = 7)) +
+  theme(strip.background =  element_blank()) + 
+  theme(plot.title = element_text(size = 10, hjust = .5))
+```
+
+The results in the items namespace are quite similar to those from all namespaces. The list of countries in the Global South with the highest **negative** change in the average rank of edit class from 2020/09 to 2021/08 **in the items (NS:0) namespace** follows.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+DT::datatable(ranks_change_country %>%
+        dplyr::filter(global == "Global South", 
+                      change_class == "Negative") %>%
+        dplyr::select(country_code, 
+                      country_name, 
+                      avg_rc) %>% 
+        dplyr::mutate(country = paste0(country_name, 
+                                       " (", 
+                                       country_code, 
+                                       ")")) %>%
+        dplyr::arrange(avg_rc) %>% 
+        dplyr::select(country, avg_rc)
+)
+```
