@@ -1,7 +1,7 @@
 ---
 title: 'Wikidata Strategy Report: Users'
 author: "Goran S. Milovanovic, Data Scientist, WMDE"
-date: "October 13, 2021"
+date: "October 24, 2021"
 output:
   html_notebook:
     code_folding: hide
@@ -16,9 +16,11 @@ output:
 
 **Repo** 
 
-- [WD_GlobalSouth_202109](https://github.com/wikimedia/analytics-wmde-WD-WikidataAdHocAnalytics/tree/master/WD_GlobalSouth_202109)
+- [analytics-wmde-WD-WikidataAdHocAnalytics/WD_Strategy_2021/](https://github.com/wikimedia/analytics-wmde-WD-WikidataAdHocAnalytics/tree/master/WD_Strategy_2021)
 
 **Reference Phabricator tickets** 
+
+- [T285741 - (Epic) Wikidata user segmentation](https://phabricator.wikimedia.org/T285741)
 
 - [T287667 - Provide Wikidata user behavior data to categorize users by hand](https://phabricator.wikimedia.org/T287667)
 
@@ -64,7 +66,7 @@ dataDir <- paste0(fPath, "_usersData/")
 
 ## 0. Data Acquisiton
 
-**NOTE** The Data Acquisition code is not fully reproducible from this Report. The data are collected by running the [WD_Strategy_2021_User_Data.R]() script from WMF Analytics Client(s), collecting the data by HiveQL queries as `.tsv` files from the [WMF Data Lake](https://wikitech.wikimedia.org/wiki/Analytics/Data_Lake), pre-processing, and storing locally as `.csv` files. The raw datasets contain the `user_id` and `user_name` fields and cannot be shared with parties that do not maintain an NDA with the WMF.
+**NOTE** The Data Acquisition code is not fully reproducible from this Report. The data are collected by running the [WD_Strategy_2021_User_Data.R](https://github.com/wikimedia/analytics-wmde-WD-WikidataAdHocAnalytics/blob/master/WD_Strategy_2021/WD_Strategy_2021_User_Data.R) script from WMF Analytics Client(s), collecting the data by HiveQL queries as `.tsv` files from the [WMF Data Lake](https://wikitech.wikimedia.org/wiki/Analytics/Data_Lake), pre-processing, and storing locally as `.csv` files. The raw datasets contain the `user_id` and `user_name` fields and cannot be shared with parties that do not maintain an NDA with the WMF.
 
 ```{r, echo = FALSE, warning = FALSE, message = FALSE}
 # - load
