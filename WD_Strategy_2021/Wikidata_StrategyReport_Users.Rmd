@@ -1,0 +1,1250 @@
+---
+title: 'Wikidata Strategy Report: Users'
+author: "Goran S. Milovanovic, Data Scientist, WMDE"
+date: "October 13, 2021"
+output:
+  html_notebook:
+    code_folding: hide
+    theme: cosmo
+    toc: yes
+    toc_float: yes
+    toc_depth: 5
+  html_document:
+    toc: yes
+    toc_depth: 5
+---
+
+**Repo** 
+
+- [WD_GlobalSouth_202109](https://github.com/wikimedia/analytics-wmde-WD-WikidataAdHocAnalytics/tree/master/WD_GlobalSouth_202109)
+
+**Reference Phabricator tickets** 
+
+- [T287667 - Provide Wikidata user behavior data to categorize users by hand](https://phabricator.wikimedia.org/T287667)
+
+- [T285459 - What UI vs API based revisions data do we have for Wikidata?](https://phabricator.wikimedia.org/T285459)
+
+**Current update** 
+
+- Complete datasets as of 2021/10/20.
+
+**Feedback.** 
+
+- Feedback should be send to `goran.milovanovic_ext@wikimedia.de`. 
+
+## Summary
+
+In this Report we consider the data on Wikidata revisions made in August 2021. Our goal is to analyze the edit behavior of Wikidata editors in respect to (a) whether they are flagged as bots or not and (b) in respect to the namespaces in which they contribute and the revision tags associated with their revisions. The ultimate goal of this study is to provide a meaningful classification of Wikidata editors in respect to their editing behavior. 
+
+**The most important findings are:**
+
+- A small number of bots reign Wikidata: on the average, a bot made 128.91 more edits than human editors in August 2021, while presenting only 0.6% of the total number of editors. However, human editors made more edits than bots in the absolute sense: 10874680 edits made by human editors vs. 8872654 edits made by bots.
+
+- Most edits were made in the `0 - Main` namespace, followed by `4 - Wikidata:WD:Project`, `146 - Lexeme:L`, `2 - User`, and `120 - Property:P`.
+
+- The most frequently used revision tag in August 2021 was `quick_statements_OAuth CID: 1776`, followed by `wikidata-ui`, `openrefine-3.4`, `OAuth CID: 1739`, `openrefine-3.3`, `mw-reverted`, `author_disambiguator_OAuth CID: 1740`, `client-linkitem-change`, `WikibaseJS-cli`, and `mw-manual-revert`.
+
+- Is is very difficult to derive a meangiful and consistent classification of human editors in respect to their editing behavior, **however** some progress have been made in that sense. Our attempts to categorize human editors relies on using two sets of features to feed ML algorithms (Hierarchical Clustering and LDA): (a) the frequency of edits made in a particular Wikidata namespace on behalf of users, and (b) the frequency of different revision tags associated with the edits made on behalf users. The results of the Hiearchical Cluster analysis of the features show that potentially meaningful correlations in their usage exist, while the results of the LDA Topic Modeling show that a potentially satisfactory classification of human editors is also possible, but more work relying on understanding exactly what patterns of namespaces and revision tags characterize users and exactly what do they say about user intentions and editing behavior is needed.
+
+- The work on user classification was constrained by another fact, namely the difficulty in the interpreation of various revision tags, e.g. `OAuth CID: 1739` which is quite frequently used. A partial understanding of the underlying semantics of such tags was obtained from studying [MediaWiki:XTools-AutoEdits.json/sandbox](https://meta.wikimedia.org/wiki/MediaWiki:XTools-AutoEdits.json/sandbox), but for some revision tags we still do not have any information on their origin.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, results = 'hide'}
+# !diagnostics off
+### --- Setup
+Sys.setenv(`_R_S3_METHOD_REGISTRATION_NOTE_OVERWRITES_` = "false")
+knitr::opts_chunk$set(fig.width = 20, fig.height = 12) 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+library(tidyverse)
+options(dplyr.summarise.inform = FALSE)
+fPath <- paste0(getwd(), "/")
+dataDir <- paste0(fPath, "_usersData/")
+```
+
+------
+
+## 0. Data Acquisiton
+
+**NOTE** The Data Acquisition code is not fully reproducible from this Report. The data are collected by running the [WD_Strategy_2021_User_Data.R]() script from WMF Analytics Client(s), collecting the data by HiveQL queries as `.tsv` files from the [WMF Data Lake](https://wikitech.wikimedia.org/wiki/Analytics/Data_Lake), pre-processing, and storing locally as `.csv` files. The raw datasets contain the `user_id` and `user_name` fields and cannot be shared with parties that do not maintain an NDA with the WMF.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# - load
+userFrame <- data.table::fread(paste0(dataDir,
+                                      "WDS2021_USER_userFrame.csv"))
+userFrame$V1 <- NULL
+revisionFrame <- data.table::fread(paste0(dataDir,
+                                          "WDS2021_USER_lastRevisionFrame.csv"))
+revisionFrame$V1 <- NULL
+namespaceFrame <- data.table::fread(paste0(dataDir,
+                                          "WDS2021_USER_userRevisionNamespaceFrame.csv"))
+namespaceFrame$V1 <- NULL
+tagsFrame <- data.table::fread(paste0(dataDir,
+                                          "WDS2021_USER_userTagsFrame.csv"))
+tagsFrame$V1 <- NULL
+# - join
+dataSet <- dplyr::left_join(userFrame, 
+                            revisionFrame,
+                            by = "user_id")
+dataSet <- dplyr::left_join(dataSet, 
+                            namespaceFrame,
+                            by = "user_id")
+dataSet <- dplyr::left_join(dataSet, 
+                            tagsFrame,
+                            by = "user_id")
+dataSet[is.na(dataSet)] <- 0
+dataSet$bot_flag <- ifelse(dataSet$bot_flag, 
+                           "bot", 
+                           "human")
+# - clear
+rm(userFrame)
+rm(revisionFrame)
+rm(namespaceFrame)
+rm(tagsFrame)
+```
+
+To help improve the interpretation of the findings, revision tags of the from `OAuth CID: \d{4`} were matched with the entries in [MediaWiki:XTools-AutoEdits.json/sandbox](https://meta.wikimedia.org/wiki/MediaWiki:XTools-AutoEdits.json/sandbox) for `www.wikidata.org`.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+author_disambiguator <-	c("OAuth CID: 1417",
+                          "OAuth CID: 1445", 
+                          "OAuth CID: 1740"
+                          )
+mixnmatch <- "OAuth CID: 1768"
+pltools <- c("OAuth CID: 168",
+             "OAuth CID: 408")
+quick_statements <- c("OAuth CID: 699", 
+                      "OAuth CID: 1253",
+                      "OAuth CID: 1351",
+                      "OAuth CID: 1776")
+w <- which(colnames(dataSet) %in% author_disambiguator)
+colnames(dataSet)[w] <- paste0("author_disambiguator_", colnames(dataSet)[w])
+w <- which(colnames(dataSet) %in% mixnmatch)
+colnames(dataSet)[w] <- paste0("mixnmatch_", colnames(dataSet)[w])
+# w <- which(colnames(dataSet) %in% pltools)
+# colnames(dataSet)[w] <- paste0("pltools_", colnames(dataSet)[w])
+w <- which(colnames(dataSet) %in% quick_statements)
+colnames(dataSet)[w] <- paste0("quick_statements_", colnames(dataSet)[w])
+```
+
+
+------
+
+## 1. The Dataset
+
+The dataset encompasses only non-anonymous users who made edits on existing Wikidata pages (that are not re-directs) in **August 2021**. The data were taken from the latest (`2021-09`) snapshot of the [wmf.mediawiki_history](https://wikitech.wikimedia.org/wiki/Analytics/Data_Lake/Edits/Mediawiki_history) table.
+
+------
+
+### 1.1 Overview
+
+The following is an overview of the present dataset.
+
+The first five (5) columns are:
+
+- **user_id** - the user id
+- **user_name** - the user name
+- **bot_flag** - having a valus of "bot" or "human", indicates if a user has a bot flag in the `wmde.mediawiki_history` table or not
+- **revisions_Aug2021** - the number of revisions made in August 2021
+- **revision_count** - the cumulative revision count of the respective user at the time of their latest recorded revision in the dataset
+- **revision_timestamp** - the timestamp of the latest recorded revision of the respective user in the dataset
+
+**Note.** The dataset is not embedded in this document and no data on `user_id` or `user_name` are revealed in this Report.
+
+The **following 22 columns** all begin with `ns_` and represent the number of revisions made on behalf of the respective user in the respective Wikidata **namespaces**. 
+
+The namespaces considered are the following (see: [https://www.wikidata.org/wiki/Help:Namespaces](https://www.wikidata.org/wiki/Help:Namespaces))
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+url <- 'https://www.wikidata.org/wiki/Help:Namespaces'
+namespaces <- htmltab::htmltab(URLencode(url), 1)
+DT::datatable(namespaces)
+```
+
+Revisions in the following namespaces are observed in the present dataset:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+colnames(namespaces)[5] <- "AssociatedNS_Index"
+colnames(namespaces)[6] <- "AssociatedNS_Name"
+datasetNS <- colnames(dataSet)[which(grepl("^ns_", colnames(dataSet)))]
+datasetNS <- gsub("^ns_", "", datasetNS)
+datasetNS <- data.frame(datasetNS = datasetNS, 
+                        stringsAsFactors = FALSE)
+namespaces_content <- namespaces %>% 
+  dplyr::select(Index, Prefix, `Title example`, Purpose)
+namespaces_talk <- namespaces %>% 
+  dplyr::select(AssociatedNS_Index, AssociatedNS_Name)
+datasetNS <- datasetNS %>% 
+  dplyr::left_join(namespaces_content, 
+                   by = c("datasetNS" = "Index"))
+datasetNS <- datasetNS %>% 
+  dplyr::left_join(namespaces_talk, 
+                   by = c("datasetNS" = "AssociatedNS_Index"))
+datasetNS$Prefix[is.na(datasetNS$Prefix)] <- 
+  datasetNS$AssociatedNS_Name[is.na(datasetNS$Prefix)]
+datasetNS <- datasetNS %>% 
+  dplyr::select(datasetNS, Prefix)
+colnames(datasetNS) <- c("ns", "prefix")
+datasetNS$prefix[1] <- "Main"
+DT::datatable(datasetNS)
+```
+
+In the present dataset we find revisions made in 22 different namespaces, while the total number of namespaces listed in [https://www.wikidata.org/wiki/Help:Namespaces](https://www.wikidata.org/wiki/Help:Namespaces) - including the associated talk namespaces - is 36. Thus, in August 2021 we did not observe any revisions, on behalf of bot or human editors, in the following namespaces: 
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+nspossible <- unique(c(namespaces_talk$AssociatedNS_Index, 
+                       namespaces_content$Index)
+                     )
+nspossible <- nspossible[grepl("[[:digit:]]+", nspossible)]
+print(
+  sort(nspossible[which(!(nspossible %in% datasetNS$ns))])
+)
+```
+
+The **following `r length(colnames(dataSet)[28: dim(dataSet)[2]])` columns** represent the **counts of particular revision tags** used by the respective user: 
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+colnames(dataSet)[28: dim(dataSet)[2]]
+```
+**Summary.** The dataset encompasses `r dim(dataSet)[1]` users (bot and human Wikidata editors), described by their `user_id`, `user_name`, `bot_flag`, `revision_count` and `revision_timestamp`, the number of revisions made in particular Wikidata namespaces, and the number of revisions tagged by particular revision tags. We find 22 different namespaces and 99 different revision tags in the dataset.
+
+
+------
+
+## 2. Revisions
+
+------
+
+### 2.1 Bot vs Human Revisions
+
+The dataset encompasses `r dim(dataSet)[1]` Wikidata editors, of which `r sum(dataSet$bot_flag == "bot")` have a bot flag and `r sum(dataSet$bot_flag == "human")` do not. The following chart represents the distribution of the total number of revisions made in August 2021 by bot and human Wikidata editors.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+ggplot2::ggplot(dataSet,
+                aes(x = bot_flag,
+                    y = log(revisions_Aug2021),
+                    fill = bot_flag)) +
+  ggplot2::geom_boxplot(color = "black") + 
+  ggplot2::scale_fill_manual(values = c("darkred", "darkorange")) +
+  xlab("Bot Flag") + ylab("log(Revision Count)") +
+  ggtitle("Bot vs Human Revisions: August 2021") +
+  theme_bw() +
+  theme(panel.border = element_blank()) +
+  theme(legend.title = element_text(size = 7)) +
+  theme(plot.title = element_text(size = 10, hjust = .5))
+```
+**Note.** A group of human editors who have made above bot median number of edits in August 2021 is clearly recognizable in the distribution of human revisions.
+
+The following is the overview of the descriptive statistics for revision counts, for bots and human editors separately:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+revisionSummaryFrame <- dataSet %>% 
+  dplyr::select(bot_flag, revisions_Aug2021) %>% 
+  dplyr::group_by(bot_flag) %>% 
+  dplyr::summarise(mean = round(mean(revisions_Aug2021), 2), 
+                   median = round(median(revisions_Aug2021), 2), 
+                   stdDev = round(sd(revisions_Aug2021), 2),
+                   max = max(revisions_Aug2021), 
+                   min = min(revisions_Aug2021), 
+                   n = dplyr::n())
+DT::datatable(revisionSummaryFrame)
+```
+
+On the average, bots made `r round(revisionSummaryFrame$mean[1]/revisionSummaryFrame$mean[2], 2)` more edits than human editors in August 2021.
+
+------
+
+### 2.2 Revisions in different namespaces
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 20}
+nsRevisions <- dataSet %>% 
+  dplyr::select(user_id, dplyr::starts_with("ns_"))
+nsRevisions <- nsRevisions %>% 
+  tidyr::pivot_longer(cols = starts_with("ns_"), 
+                      names_to = "ns",
+                      values_to = "revisions")
+nsRevisions$ns <- as.integer(gsub("^ns_", "", nsRevisions$ns))
+nsRevisions$ns_type <- ifelse(nsRevisions$ns %% 2 == 0, 
+                              "namespace",
+                              "talk_namespace")
+nsRevisions$ns <- as.character(nsRevisions$ns)
+nsRevisions <- nsRevisions %>% 
+  dplyr::left_join(datasetNS, 
+                   by = "ns")
+nsRevisions$prefix <- gsub(":$", "", nsRevisions$prefix)
+nsRevisions$ns <- paste0(nsRevisions$ns, " - ", nsRevisions$prefix)
+nsRevisions$ns <- factor(nsRevisions$ns, 
+                         levels = unique(nsRevisions$ns))
+ggplot2::ggplot(nsRevisions,
+                aes(x = ns,
+                    y = log(revisions), 
+                    fill = ns_type)) +
+  ggplot2::geom_boxplot(color = "black") + 
+  ggplot2::scale_fill_manual(values = c("deepskyblue", "blue")) +
+  # ggplot2::facet_wrap(~ns_type, ncol =  2) + 
+  xlab("NS") + ylab("log(Revision Count)") +
+  ggtitle("Revisions in Wikidata Namespaces: August 2021") +
+  theme_bw() +
+  theme(panel.border = element_blank()) +
+  theme(plot.title = element_text(size = 30, hjust = .5)) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 22)) +
+  theme(axis.text.y = element_text(size = 25)) +
+  theme(axis.title.x = element_text(size = 30)) +
+  theme(axis.title.y = element_text(size = 30)) + 
+  theme(legend.position = "top") + 
+  theme(legend.text = element_text(size = 28)) + 
+  theme(legend.title = element_text(size = 28))
+```
+
+The following table presents the total number of revisions per namespaces and the descriptive statistics per user: mean, median, standard deviation, maximum and minimum:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+nsRevisionsTableFrame <- nsRevisions %>% 
+  dplyr::select(ns, ns_type, revisions) %>% 
+  dplyr::group_by(ns, ns_type) %>% 
+  dplyr::summarise(total = sum(revisions),
+                   mean = round(mean(revisions), 2), 
+                   median = round(median(revisions), 2), 
+                   stdDev = round(sd(revisions), 2),
+                   max = max(revisions), 
+                   min = min(revisions), 
+                   ) %>% 
+  dplyr::arrange(desc(total))
+DT::datatable(nsRevisionsTableFrame)
+```
+
+------
+
+### 2.3 Human and bot revisions in different namespaces
+
+Do bot and human editors differ in the number of revisions they make in different namespaces?
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+nsRevisions <- nsRevisions %>% 
+  dplyr::left_join(
+    dplyr::select(dataSet,
+                  user_id,
+                  bot_flag),
+    by = "user_id"
+  )
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 20, fig.height = 25}
+ggplot2::ggplot(nsRevisions,
+                aes(x = bot_flag,
+                    y = log(revisions), 
+                    fill = bot_flag)) +
+  ggplot2::geom_boxplot(color = "black") + 
+  ggplot2::scale_fill_manual(values = c("darkred", "darkorange")) +
+  ggplot2::facet_wrap(~ns, ncol =  4) + 
+  xlab("User") + ylab("log(Revision Count)") +
+  ggtitle("Human vs Bot Revisions in Wikidata Namespaces: August 2021") +
+  theme_bw() +
+  theme(panel.border = element_blank()) +
+  theme(plot.title = element_text(size = 30, hjust = .5)) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 15)) +
+  theme(axis.text.y = element_text(size = 15)) +
+  theme(axis.title.x = element_text(size = 25)) +
+  theme(axis.title.y = element_text(size = 25)) + 
+  theme(legend.position = "top") + 
+  theme(legend.text = element_text(size = 28)) + 
+  theme(legend.title = element_text(size = 28)) + 
+  theme(strip.text = element_text(size = 20))
+```
+The following table presents the total number of revisions per namespaces, for bot and human editors separately, and the descriptive statistics per user (bot or human): mean, median, standard deviation, maximum and minimum:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+nsRevisionsTableFrame <- nsRevisions %>% 
+  dplyr::select(ns, ns_type, bot_flag, revisions) %>% 
+  dplyr::group_by(ns, ns_type, bot_flag) %>% 
+  dplyr::summarise(total = sum(revisions),
+                   mean = round(mean(revisions), 2), 
+                   median = round(median(revisions), 2), 
+                   stdDev = round(sd(revisions), 2),
+                   max = max(revisions), 
+                   min = min(revisions), 
+                   ) %>% 
+  dplyr::arrange(desc(total))
+DT::datatable(nsRevisionsTableFrame)
+```
+
+------
+
+### 2.4 Revision tags
+
+The following table is ordered by the decreasing count of revisions in which different revision tags were used.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+nsTagRevisions <- dataSet %>% 
+  dplyr::select(-user_name,
+                -revision_count,
+                -revision_timestamp,
+                -revisions_Aug2021,
+                -starts_with("ns_"))
+nsTagRevisions <- nsTagRevisions %>% 
+  tidyr::pivot_longer(cols = c(-user_id, -bot_flag),
+                      names_to = "tag",
+                      values_to = "count"
+                      )
+nsTagRevisionsTable <- nsTagRevisions %>% 
+  dplyr::select(tag, count) %>% 
+  dplyr::group_by(tag) %>% 
+  dplyr::summarise(revisions = sum(count, na.rm = TRUE)) %>% 
+  dplyr::arrange(desc(revisions))
+DT::datatable(nsTagRevisionsTable)
+```
+
+The following chart presents the 50 most frequently used revision tags:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 20, fig.height = 12}
+nsTagRevisionsPlotFrame <- nsTagRevisionsTable[1:50, ]
+nsTagRevisionsPlotFrame$tag <- 
+  factor(nsTagRevisionsPlotFrame$tag,
+         levels =
+           nsTagRevisionsPlotFrame$tag[order(-nsTagRevisionsPlotFrame$revisions)])
+ggplot2::ggplot(nsTagRevisionsPlotFrame,
+                aes(x = tag,
+                    y = log(revisions))) +
+  ggplot2::geom_bar(stat = "identity", width = .35, fill = "darkblue") + 
+  xlab("Revision tag") + ylab("log(Revision Count)") +
+  ggtitle("Revision tags: August 2021") +
+  theme_bw() +
+  theme(panel.border = element_blank()) +
+  theme(plot.title = element_text(size = 30, hjust = .5)) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 15)) +
+  theme(axis.text.y = element_text(size = 15)) +
+  theme(axis.title.x = element_text(size = 25)) +
+  theme(axis.title.y = element_text(size = 25)) 
+```
+
+The following two chart presents the 50 most frequently used revision tags for bot and human editors separately:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 20, fig.height = 12}
+nsTagRevisionsTable <- nsTagRevisions %>% 
+  dplyr::select(bot_flag, tag, count) %>% 
+  dplyr::group_by(bot_flag, tag) %>% 
+  dplyr::summarise(revisions = sum(count, na.rm = TRUE)) %>% 
+  dplyr::arrange(desc(revisions))
+nsTagRevisionsPlotFrame <- nsTagRevisionsTable %>% 
+  dplyr::filter(bot_flag == "human") %>% 
+  head(50)
+nsTagRevisionsPlotFrame$tag <- 
+  factor(nsTagRevisionsPlotFrame$tag,
+         levels =
+           nsTagRevisionsPlotFrame$tag[order(-nsTagRevisionsPlotFrame$revisions)])
+ggplot2::ggplot(nsTagRevisionsPlotFrame,
+                aes(x = tag,
+                    y = log(revisions))) +
+  ggplot2::geom_bar(stat = "identity", 
+                    width = .35, 
+                    fill = "darkorange") + 
+  xlab("Revision tag") + ylab("log(Revision Count)") +
+  ggtitle("Human Editors, Revision tags: August 2021") +
+  theme_bw() +
+  theme(panel.border = element_blank()) +
+  theme(plot.title = element_text(size = 30, hjust = .5)) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 15)) +
+  theme(axis.text.y = element_text(size = 15)) +
+  theme(axis.title.x = element_text(size = 25)) +
+  theme(axis.title.y = element_text(size = 25)) 
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 20, fig.height = 12}
+nsTagRevisionsTable <- nsTagRevisions %>% 
+  dplyr::select(bot_flag, tag, count) %>% 
+  dplyr::group_by(bot_flag, tag) %>% 
+  dplyr::summarise(revisions = sum(count, na.rm = TRUE)) %>% 
+  dplyr::arrange(desc(revisions))
+nsTagRevisionsPlotFrame <- nsTagRevisionsTable %>% 
+  dplyr::filter(bot_flag == "bot") %>% 
+  head(50)
+nsTagRevisionsPlotFrame$tag <- 
+  factor(nsTagRevisionsPlotFrame$tag,
+         levels =
+           nsTagRevisionsPlotFrame$tag[order(-nsTagRevisionsPlotFrame$revisions)])
+ggplot2::ggplot(nsTagRevisionsPlotFrame,
+                aes(x = tag,
+                    y = log(revisions))) +
+  ggplot2::geom_bar(stat = "identity", 
+                    width = .35, 
+                    fill = "darkred") + 
+  xlab("Revision tag") + ylab("log(Revision Count)") +
+  ggtitle("Bot Editors, Revision tags: August 2021") +
+  theme_bw() +
+  theme(panel.border = element_blank()) +
+  theme(plot.title = element_text(size = 30, hjust = .5)) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 15)) +
+  theme(axis.text.y = element_text(size = 15)) +
+  theme(axis.title.x = element_text(size = 25)) +
+  theme(axis.title.y = element_text(size = 25)) 
+```
+
+------
+
+## 3. User Classification
+
+------
+
+### 3.1 Overview
+
+------
+
+The **central problem** in any of our attempts to provide a meaningful classification of Wikidata editors is that all tested approaches with standard model selection procedures singled out **too many categories**. This is understandable because of the high intrinsic complexity of editor behavior and the respective dataset. We have turned to an approach more explanatory in its nature, analyzing the features available to categorize users step by step, "guestimating" a manageable number of categories to look for.
+
+Our approach was then to try to intentionally reduce the complexity, resulting in a smaller number of categories of features and users, and accepting to live with the fact that the resulting categorizations will not be perfect. We had to prioritize the criterion of interpretability over statistical indicators. 
+
+Let's have a look at the distribution of revision made on behalf of human editors. We first consider only (a) human users who (b) have made five or more than five edits in August 2021. There 14856 such users:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# - Data
+classificationSet <- dataSet %>% 
+  dplyr::filter(bot_flag == "human") %>% 
+  dplyr::select(-user_name,
+                -revision_count,
+                -revision_timestamp,
+                -bot_flag, 
+                -revisionsAug2021)
+users_classificationSet <- classificationSet$user_id
+classificationSet$user_id <- NULL
+totalRevisionsFrame <- data.frame(user_id = users_classificationSet, 
+                                  revisions = rowSums(classificationSet),
+                                  stringsAsFactors = FALSE)
+totalRevisionsFrame <- totalRevisionsFrame %>% 
+  dplyr::arrange(desc(revisions))
+wT <- which(totalRevisionsFrame$revisions >= 5)
+totalRevisionsFrame <- totalRevisionsFrame[wT, ]
+s_users <- totalRevisionsFrame$user_id[wT]
+w <- which(users_classificationSet %in% s_users)
+users_classificationSet <- users_classificationSet[w]
+classificationSet <- classificationSet[w, ]
+
+# - Rank-Frequency
+rf_table <- as.data.frame(
+  table(totalRevisionsFrame$revisions),
+  stringsAsFactors = FALSE
+)
+colnames(rf_table) <- c("Revisions", "Frequency")
+rf_table$Revisions <- as.numeric(rf_table$Revisions)
+rf_table$Rank <- 1:dim(rf_table)[1]
+ggplot2::ggplot(rf_table, 
+                aes(x = log(Revisions),
+                    y = log(Frequency))) + 
+  ggplot2::geom_point(size = .25, color = "blue") +
+  ggplot2::geom_point(size = .20, color = "white") +
+  ggplot2::theme_bw() + 
+  ggplot2::xlab("log(Revisions)") + ggplot2::ylab("log(Frequency)") + 
+  ggplot2::ggtitle("Wikidata Revisions August 2021\nHuman editors w. >=5 edits") + 
+  ggplot2::theme(panel.border = element_blank()) + 
+  ggplot2::theme(plot.title = element_text(hjust = .5, size = 12))
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+ggplot2::ggplot(rf_table, 
+                aes(x = log(Rank),
+                    y = log(Frequency))) + 
+  ggplot2::geom_smooth(method = "lm", size = .25, color = "red") + 
+  ggplot2::geom_point(size = .25, color = "blue") +
+  ggplot2::geom_point(size = .20, color = "white") +
+  ggplot2::theme_bw() + 
+  ggplot2::xlab("log(Revision Rank)") + ggplot2::ylab("log(Frequency)") + 
+  ggplot2::ggtitle("Wikidata Revisions August 2021\nHuman editors w. >=5 edits") + 
+  ggplot2::theme(panel.border = element_blank()) + 
+  ggplot2::theme(plot.title = element_text(hjust = .5))
+```
+
+Obviously, a small number of users contribute with the largest amounts of edits. Let's take a look at the descriptive statistics for revisions in August 2021:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+summary(totalRevisionsFrame$revisions)
+```
+Now we inspect the number of revisions made in different namespaces and tagged differently:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+markRevisionsFrame <- data.frame(ns_tag = colnames(classificationSet), 
+                                 revisions = colSums(classificationSet))
+markRevisionsFrame <- dplyr::arrange(markRevisionsFrame, 
+                                     desc(revisions))
+totalRevisions <- sum(colSums(classificationSet))
+markRevisionsFrame$proportion <- 
+  markRevisionsFrame$revisions/totalRevisions
+rownames(markRevisionsFrame) <- NULL
+DT::datatable(markRevisionsFrame)
+```
+
+We have decided, quite arbitrarily at this point, to simplify the problem by using only namespaces and tags that characterize at least 1000 revisions as features in user classification:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+classificationSet <- as.data.frame(classificationSet)
+selFeatures <- markRevisionsFrame$ns_tag[markRevisionsFrame$revisions >= 1000]
+w <- which(colnames(classificationSet) %in% selFeatures)
+classificationSet <- classificationSet[, w]
+wUsersLost <- which(rowSums(classificationSet) == 0)
+selFeatures
+```
+Upon removing the rare features we lose **zero** users from the datasets: none of the users exclusively edited in the namespaces or used the tags that we have removed. In our next step we want to take a look at the hierarchical clustering of **features** - far less numerable then users in our data. If a meaningful classification of features can be discovered, that classification might guide our decisions on how to approach user classification. Also, understanding the correlations between the features - namespaces and revision tags - in editor's revisions could be already telling about the way they could be categorized.
+
+------
+
+### 3.3 Hierarchical Clustering of Features
+
+------
+
+We have compute the [tf-idf](https://en.wikipedia.org/wiki/Tf%E2%80%93idf) to weight the features in the dataset appropriately and continue feature selection on its basis:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+cS <- classificationSet
+cS <- t(cS)
+cS_tf <- apply(cS, 2, function(x) {
+  x/sum(x)
+})
+cS_idf <- apply(cS, 1, function(x) {
+  log(length(x)/(1+sum(x > 0)))
+})
+cS_tf_idf <- apply(cS_tf, 1, function(x) {
+  x * cS_idf
+})
+cS_tf_idf_select <- data.frame(rev = colnames(cS_tf_idf), 
+                      tf_idf = colSums(cS_tf_idf), 
+                      stringsAsFactors = FALSE) %>% 
+  dplyr::arrange(tf_idf)
+DT::datatable(cS_tf_idf_select)
+```
+
+We have decided to eliminate all features with a tf-idf score lower than `.5`, which resulted in the elimination of a single feature:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+features <- cS_tf_idf_select$rev[cS_tf_idf_select$tf_idf > .5]
+non_features <- cS_tf_idf_select$rev[cS_tf_idf_select$tf_idf <= .5]
+w_features <- which(colnames(cS_tf_idf) %in% features)
+cS_clusterSet <- cS_tf_idf[, w_features]
+print(non_features)
+```
+In the next step we inspect the hiearchical clustering of features: namespaces and revision tags.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 20, fig.height = 20}
+cSdist <- parallelDist::parDist(t(cS_clusterSet), method = "cosine") 
+hclust_avg <- hclust(cSdist, method = "ward.D2")
+plot(hclust_avg)
+```
+
+It seems like many clusters in this solution do make sense indeed. Let's try to mark a small number of feature, classes, e.g. 10:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 20, fig.height = 20}
+grp <- cutree(hclust_avg, k = 10)
+# Visualize
+plot(hclust_avg, cex = 1.2)
+rect.hclust(hclust_avg, k = 10, border = 2:5)
+```
+
+Let's try with 15 classes:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 20, fig.height = 20}
+grp <- cutree(hclust_avg, k = 15)
+# Visualize
+plot(hclust_avg, cex = 1.2)
+rect.hclust(hclust_avg, k = 15, border = 2:5)
+```
+
+**Hopefully** this means that we could come up with a meaningful classification of users based on a set of categories characterized by more or less distinctive features (revision namespaces and tags). 
+
+------
+
+### 3.4 Topic Model: Features and Users
+
+------
+
+We have decided to use the LDA topic model to categorize users and features. The LDA model assumes the topics are uncorrelated; while this assumption is unrealistic in most applications, this time it might be helpful to actually enforce a (maybe somewhat less precise) meaningful classification of users. We will test LDA models encompassing everything from two to 15 topics in a 3-fold cross-validation model selection procedure.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# - lda dataset
+lda_data <- classificationSet
+wCols <- which(colnames(lda_data) %in% colnames(cS_clusterSet))
+lda_data <- lda_data[, wCols]
+
+# - Setup
+library(snowfall)
+
+# - start cluster and export data + package
+# - prepare subsets for 3-fold cross-validation
+foldIx <- sample(1:3, dim(lda_data)[1], replace = T)
+folds <- 1:3
+
+# - store perplexity
+repl_perplexity <- vector(mode = "list", length = length(folds))
+
+# - convert classificationSet to sparse matrix for {text2vec}
+lda_data <- Matrix::Matrix(as.matrix(lda_data),
+                           sparse = TRUE) 
+
+# - start CV
+for (j in 1:length(folds)) {
+  
+  trainIx <- setdiff(folds, j)
+  trainTDM <- lda_data[which(foldIx %in% trainIx), ]
+  testTDM <- lda_data[which(foldIx %in% j), ]
+  
+  # - params
+  # - topic range:
+  nTops <- seq(2, 15, by = 1)
+  # - initiate cluster:
+  snowfall::sfInit(parallel = TRUE,
+                   cpus = 20,
+                   type = "SOCK")
+  # - export
+  snowfall::sfExport("nTops")
+  snowfall::sfExport("trainTDM")
+  snowfall::sfExport("testTDM")
+  snowfall::sfLibrary(text2vec)
+  
+  # - train:
+  print(paste0("---------------- Running CV step: ", j))
+  t1 <- Sys.time()
+  print(paste0("Training starts:", t1))
+  modelPerplexity <-
+    snowfall::sfClusterApplyLB(nTops, function(x) {
+      # - define model:
+      # - alpha:
+      doc_topic_prior = 50/x
+      # - beta:
+      topic_word_prior = 1/x
+      # - lda_model:
+      lda_model <- text2vec:::LatentDirichletAllocation$new(n_topics = x,
+                                                            doc_topic_prior,
+                                                            topic_word_prior)
+      # - train:
+      doc_topic_distr <- tryCatch({
+        lda_model$fit_transform(trainTDM,
+                                n_iter = 100,
+                                convergence_tol = -1,
+                                n_check_convergence = 25,
+                                progressbar = FALSE)
+        },
+        error = function(condition) {
+          NULL
+          })
+      
+      # - if !is.null(doc_topic_distr), compute perplexity:
+      if (!is.null(doc_topic_distr)) {
+        new_doc_topic_distr <- tryCatch({
+          lda_model$transform(testTDM)
+          },
+          error = function(condition) {
+            NULL
+            })
+        # - if !is.null(new_doc_topic_distr), compute perplexity:
+        if (!is.null(new_doc_topic_distr)) {
+          text2vec:::perplexity(testTDM,
+                                topic_word_distribution = lda_model$topic_word_distribution,
+                                doc_topic_distribution = new_doc_topic_distr)
+          } else {
+            return(NULL)
+            }
+        } else {
+          return(NULL)
+          }
+      })
+      
+      # - stop cluster
+      snowfall::sfStop()
+      
+      # - toReport
+      print(paste0("Training ends:", Sys.time()))
+      print(paste0("Training took: ", Sys.time() - t1))
+      
+      # - store perplexities from j-th replication:
+      modelFrame <- data.frame(topics = nTops,
+                               perplexity = unlist(modelPerplexity),
+                               fold = j,
+                               stringsAsFactors = F)
+      repl_perplexity[[j]] <- modelFrame
+      print(paste0("---------------- Completed fold: ", j))
+      
+    }
+
+# - mean perplexity from all folds
+modelFrame <- data.table::rbindlist(repl_perplexity)
+modelFrame <- modelFrame %>%
+  dplyr::group_by(topics) %>%
+  dplyr::summarise(meanPerplexity = mean(perplexity))
+ggplot2::ggplot(modelFrame, 
+                aes(x = topics,
+                    y = meanPerplexity, 
+                    label = topics)) + 
+  ggplot2::geom_line(size = .25, color = "red") +
+  ggplot2::geom_point(size = 1.5, color = "red") +
+  ggplot2::geom_point(size = 1, color = "white") +
+  ggplot2::theme_bw() + 
+  ggrepel::geom_text_repel(size = 3.5) + 
+  ggplot2::xlab("Topics") + ggplot2::ylab("3-fold CV Mean Perplexity") + 
+  ggplot2::ggtitle("LDA Model Selection") + 
+  ggplot2::theme(panel.border = element_blank()) + 
+  ggplot2::theme(plot.title = element_text(hjust = .5))
+```
+So 13 topics it will be:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# - fit optimal category LDA model
+# - alpha:
+selectedTopics <- 13
+doc_topic_prior = 50/selectedTopics
+# - beta:
+topic_word_prior = 1/selectedTopics
+t1 <- Sys.time()
+print(paste0("Optimal category model: Training starts: ", t1))
+ldaModel <-
+  text2vec:::LatentDirichletAllocation$new(n_topics = selectedTopics,
+                                           doc_topic_prior,
+                                           topic_word_prior)
+# - train:
+doc_topic_distr <-
+  ldaModel$fit_transform(lda_data,
+                         n_iter = 1000,
+                         convergence_tol = -1,
+                         n_check_convergence = 25,
+                         progressbar = FALSE)
+print(paste0("Optimal category model: Training ends :", Sys.time()))
+print(paste0("Training took: ", Sys.time() - t1))
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# - collect matrices:
+feature_topic <- as.data.frame(t(ldaModel$topic_word_distribution))
+colnames(feature_topic) <- paste0("topic", 1:dim(itemtopic)[2])
+write.csv(feature_topic, "_usersData/feature_topic.csv")
+# - wdcm_projecttopic
+user_topic <- as.data.frame(doc_topic_distr)
+colnames(user_topic) <- paste0("topic", 1:dim(user_topic)[2])
+user_topic$user_id <- users_classificationSet
+write.csv(user_topic, "_usersData/user_topic.csv")
+```
+
+The following table presents the top ten most important features in each of the 13 topics in the model:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+topicExplain <- apply(feature_topic, 2, function(x) {
+  s <- sort(x, decreasing = TRUE)[1:10]
+  return(names(s))
+})
+print(as.data.frame(topicExplain))
+```
+We have used the topics x users matrix - a 13-dimensional descriptions of each Wikidata human editor where each user is described as a distribution across the 13 topics in the model - to visually inspect the user classification. We pick the most important topic for each user and "pronounce" that to be a category in which that user is found. Than we used a t-SNE 2D dimensionality reduction to reduce the 13-dimensional space to two dimensions only, and plotted each user as a point in the resulting 2D space, using color the represent the dominant topic for the respective user, and markser size to represent the log(revisions) made in August 2021 on behalf of the respective user.
+
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+cSdist <- user_topic
+cSdist$user_id <- NULL
+cSdist <- parallelDist::parDist(as.matrix(cSdist), 
+                                method = "hellinger") 
+cSdist <- as.matrix(cSdist)
+rtsne_solution <- Rtsne::Rtsne(cSdist,
+                               dims = 2,
+                               perplexity = 50,
+                               theta = 0,
+                               check_duplicates = TRUE,
+                               pca = TRUE,
+                               max_iter = 5000,
+                               is_distance = TRUE,
+                               pca_center = FALSE,
+                               pca_scale = FALSE,
+                               num_threads = 12, 
+                               verbose = TRUE)
+solution_2d <- as.data.frame(rtsne_solution$Y)
+solution_2d$user_id <- user_topic$user_id
+user_topic_class <- apply(user_topic, 1, function(x) {
+  names(sort(x[1:length(x)-1], decreasing = TRUE)[1])
+})
+user_topic_class <- gsub("topic", "", user_topic_class)
+solution_2d$topic <- user_topic_class
+colnames(solution_2d)[1:2] <- c("x", "y")
+write.csv(solution_2d, "_usersData/tsne_solution_2d.csv")
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 20, fig.height = 15}
+clr <- c("black", "red", "blue", "yellow", "green", 
+         "cadetblue3", "violet", "deepskyblue", "grey50", "purple",
+         "darkred", "darkorange", "darkblue")
+solution_2d$topic <- factor(solution_2d$topic, 
+                            levels = 1:13)
+w <- which(dataSet$user_id %in% solution_2d$user_id)
+solution_2d$revisions_Aug2021 <- dataSet$revisions_Aug2021[w]
+ggplot2::ggplot(solution_2d, 
+                aes(x = x,
+                    y = y, 
+                    color = topic)) +
+  ggplot2::geom_point(ggplot2::aes(size = revisions_Aug2021), shape = 21) +
+  ggplot2::scale_size(name = "Revisions August 2021",
+                          breaks = ggplot2::waiver(),
+                          labels = scales::comma,
+                          limits = NULL,
+                          range = c(.5, 30),
+                          trans = "identity",
+                          guide = "legend") + 
+  ggplot2::guides(colour = guide_legend(override.aes = list(size = 5))) + 
+  ggtitle("t-SNE 2D Representation\nWikidata editors in the LDA Topic Model") +
+  ggplot2::scale_color_manual(values = clr) +
+  ggplot2::theme_bw() + 
+  ggplot2::theme(panel.border = element_blank()) + 
+  ggplot2::theme(plot.title = element_text(hjust = .5)) + 
+  ggplot2::theme(axis.text.x = element_blank()) + 
+  ggplot2::theme(axis.text.y = element_blank()) +
+  ggplot2::theme(axis.title.x = element_blank()) + 
+  ggplot2::theme(axis.title.y = element_blank()) +
+  ggplot2::theme(legend.position = "right") + 
+  ggplot2::theme(legend.text = element_text(size = 12)) + 
+  ggplot2::theme(legend.title = element_text(size = 12)) +
+  ggplot2::theme(plot.title = element_text(size = 15, hjust = .5))
+```
+
+Let's take a look at (a) how many human editors do we find in each topic (reminder: we have "forced" the categorization of users into dominant topics, the categorization in the LDA model is in fact fuzzy), and (b) how many edits have they made in August 2021:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+topicsOverview <- solution_2d %>% 
+  dplyr::select(topic, revisions_Aug2021) %>% 
+  dplyr::group_by(topic) %>% 
+  dplyr::summarise(num_editors = dplyr::n(),
+                   total_revisions = sum(revisions_Aug2021),
+                   mean_revisions = mean(revisions_Aug2021), 
+                   med_revisions = median(revisions_Aug2021),
+                   std_dev = sd(revisions_Aug2021),
+                   min = min(revisions_Aug2021), 
+                   max = max(revisions_Aug2021)) %>% 
+  dplyr::arrange(desc(num_editors)) %>% 
+print(topicsOverview)
+```
+
+Topics 2, 12, 1 and 9 encompass the most of the users who made edits in August 2021. Users for whom Topic 2 is dominant also made a large number of revisions on the average (460.5). Topics 3 and 10 encompass less users, but those users made a lot of revisions on the average: 163 and 240.2, respectively. Topic 13 is interesting: we find only 68 editors there who made 71984.34 edits on the average, with a single editor contributing with 1840380 edits - this might be a case of a bot incorrectly flagged as a human editors in our Data Lake - but from the 2D map we see that not only one user have made a huge amount of contributions in this topic. Similarly, in Topic 6, only 65 users have made 2374.45 revisions on the average, again with a high maximum of 117035 edits (but we also find a maximum of 184928 edits in Topic 1). Everything else seem to be topics of less importance in the model: the encompass a small number of users with a lower average number of revisions.
+
+------
+
+### 3.5 Characterizing User Categories
+
+------
+
+Let's inspect the most interesting topics. We will take a look at the most important features in topics **1**, **2**, **3**, **6**, **9**, **10**, **12**, and **13**. For each topic, we look into it and single out the most important features - namespaces and revision tags - in it. Then we inspect the per user distributions of the features in each topic.
+
+#### 3.5.1 Topic 1
+
+The top ten most important features in this topic are:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+sel_topic <- "topic1"
+w <- which(colnames(topicExplain) == sel_topic)
+topic_char <- topicExplain[, w]
+print(topic_char)
+```
+The distributions of revision features in this topic:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 12, fig.height = 8}
+wUsers <- solution_2d$user_id[which(solution_2d$topic == 1)]
+topicFrame <- dataSet %>% 
+  dplyr::filter(user_id %in% wUsers) %>% 
+  dplyr::select(user_id, 
+                revisions_Aug2021, 
+                revision_count,
+                topic_char)
+tF2 <- topicFrame %>% 
+  dplyr::select(-user_id,
+                -revisions_Aug2021, 
+                -revision_count)
+ggplot(stack(tF2), 
+       ggplot2::aes(x = ind, 
+                    y = log(values), 
+                    fill = ind)) +
+  ggplot2::geom_boxplot() +
+  xlab("Features") + ylab("log(Revisions)") +
+  theme_bw() +
+  ggplot2::ggtitle("Topic 1: Features") + 
+  ggplot2::theme(panel.border = element_blank()) + 
+  ggplot2::theme(axis.text.x = element_text(size = 12, angle = 90, 
+                                            vjust=0.5, hjust=1)) + 
+  ggplot2::theme(axis.text.y = element_text(size = 12)) +
+  ggplot2::theme(axis.title.x = element_text(size = 12)) + 
+  ggplot2::theme(axis.title.y = element_text(size = 12)) +
+  ggplot2::theme(plot.title = element_text(size = 15, hjust = .5))
+```
+
+#### 3.5.2 Topic 2
+
+The top ten most important features in this topic are:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+sel_topic <- "topic2"
+w <- which(colnames(topicExplain) == sel_topic)
+topic_char <- topicExplain[, w]
+print(topic_char)
+```
+The distributions of revision features in this topic:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 12, fig.height = 8}
+wUsers <- solution_2d$user_id[which(solution_2d$topic == 2)]
+topicFrame <- dataSet %>% 
+  dplyr::filter(user_id %in% wUsers) %>% 
+  dplyr::select(user_id, 
+                revisions_Aug2021, 
+                revision_count,
+                topic_char)
+tF2 <- topicFrame %>% 
+  dplyr::select(-user_id,
+                -revisions_Aug2021, 
+                -revision_count)
+ggplot(stack(tF2), 
+       ggplot2::aes(x = ind, 
+                    y = log(values), 
+                    fill = ind)) +
+  ggplot2::geom_boxplot() +
+  xlab("Features") + ylab("log(Revisions)") +
+  theme_bw() +
+  ggplot2::ggtitle("Topic 2: Features") + 
+  ggplot2::theme(panel.border = element_blank()) + 
+  ggplot2::theme(axis.text.x = element_text(size = 12, angle = 90, 
+                                            vjust=0.5, hjust=1)) + 
+  ggplot2::theme(axis.text.y = element_text(size = 12)) +
+  ggplot2::theme(axis.title.x = element_text(size = 12)) + 
+  ggplot2::theme(axis.title.y = element_text(size = 12)) +
+  ggplot2::theme(plot.title = element_text(size = 15, hjust = .5))
+```
+
+#### 3.5.3 Topic 3
+
+The top ten most important features in this topic are:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+sel_topic <- "topic3"
+w <- which(colnames(topicExplain) == sel_topic)
+topic_char <- topicExplain[, w]
+print(topic_char)
+```
+The distributions of revision features in this topic:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 12, fig.height = 8}
+wUsers <- solution_2d$user_id[which(solution_2d$topic == 3)]
+topicFrame <- dataSet %>% 
+  dplyr::filter(user_id %in% wUsers) %>% 
+  dplyr::select(user_id, 
+                revisions_Aug2021, 
+                revision_count,
+                topic_char)
+tF2 <- topicFrame %>% 
+  dplyr::select(-user_id,
+                -revisions_Aug2021, 
+                -revision_count)
+ggplot(stack(tF2), 
+       ggplot2::aes(x = ind, 
+                    y = log(values), 
+                    fill = ind)) +
+  ggplot2::geom_boxplot() +
+  xlab("Features") + ylab("log(Revisions)") +
+  theme_bw() +
+  ggplot2::ggtitle("Topic 3: Features") + 
+  ggplot2::theme(panel.border = element_blank()) + 
+  ggplot2::theme(axis.text.x = element_text(size = 12, angle = 90, 
+                                            vjust=0.5, hjust=1)) + 
+  ggplot2::theme(axis.text.y = element_text(size = 12)) +
+  ggplot2::theme(axis.title.x = element_text(size = 12)) + 
+  ggplot2::theme(axis.title.y = element_text(size = 12)) +
+  ggplot2::theme(plot.title = element_text(size = 15, hjust = .5))
+```
+
+
+#### 3.5.4 Topic 6
+
+The top ten most important features in this topic are:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+sel_topic <- "topic6"
+w <- which(colnames(topicExplain) == sel_topic)
+topic_char <- topicExplain[, w]
+print(topic_char)
+```
+The distributions of revision features in this topic:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 12, fig.height = 8}
+wUsers <- solution_2d$user_id[which(solution_2d$topic == 6)]
+topicFrame <- dataSet %>% 
+  dplyr::filter(user_id %in% wUsers) %>% 
+  dplyr::select(user_id, 
+                revisions_Aug2021, 
+                revision_count,
+                topic_char)
+tF2 <- topicFrame %>% 
+  dplyr::select(-user_id,
+                -revisions_Aug2021, 
+                -revision_count)
+ggplot(stack(tF2), 
+       ggplot2::aes(x = ind, 
+                    y = log(values), 
+                    fill = ind)) +
+  ggplot2::geom_boxplot() +
+  xlab("Features") + ylab("log(Revisions)") +
+  theme_bw() +
+  ggplot2::ggtitle("Topic 6: Features") + 
+  ggplot2::theme(panel.border = element_blank()) + 
+  ggplot2::theme(axis.text.x = element_text(size = 12, angle = 90, 
+                                            vjust=0.5, hjust=1)) + 
+  ggplot2::theme(axis.text.y = element_text(size = 12)) +
+  ggplot2::theme(axis.title.x = element_text(size = 12)) + 
+  ggplot2::theme(axis.title.y = element_text(size = 12)) +
+  ggplot2::theme(plot.title = element_text(size = 15, hjust = .5))
+```
+
+#### 3.5.5 Topic 9
+
+The top ten most important features in this topic are:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+sel_topic <- "topic9"
+w <- which(colnames(topicExplain) == sel_topic)
+topic_char <- topicExplain[, w]
+print(topic_char)
+```
+The distributions of revision features in this topic:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 12, fig.height = 8}
+wUsers <- solution_2d$user_id[which(solution_2d$topic == 9)]
+topicFrame <- dataSet %>% 
+  dplyr::filter(user_id %in% wUsers) %>% 
+  dplyr::select(user_id, 
+                revisions_Aug2021, 
+                revision_count,
+                topic_char)
+tF2 <- topicFrame %>% 
+  dplyr::select(-user_id,
+                -revisions_Aug2021, 
+                -revision_count)
+ggplot(stack(tF2), 
+       ggplot2::aes(x = ind, 
+                    y = log(values), 
+                    fill = ind)) +
+  ggplot2::geom_boxplot() +
+  xlab("Features") + ylab("log(Revisions)") +
+  theme_bw() +
+  ggplot2::ggtitle("Topic 9: Features") + 
+  ggplot2::theme(panel.border = element_blank()) + 
+  ggplot2::theme(axis.text.x = element_text(size = 12, angle = 90, 
+                                            vjust=0.5, hjust=1)) + 
+  ggplot2::theme(axis.text.y = element_text(size = 12)) +
+  ggplot2::theme(axis.title.x = element_text(size = 12)) + 
+  ggplot2::theme(axis.title.y = element_text(size = 12)) +
+  ggplot2::theme(plot.title = element_text(size = 15, hjust = .5))
+```
+
+#### 3.5.6 Topic 10
+
+The top ten most important features in this topic are:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+sel_topic <- "topic10"
+w <- which(colnames(topicExplain) == sel_topic)
+topic_char <- topicExplain[, w]
+print(topic_char)
+```
+The distributions of revision features in this topic:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 12, fig.height = 8}
+wUsers <- solution_2d$user_id[which(solution_2d$topic == 10)]
+topicFrame <- dataSet %>% 
+  dplyr::filter(user_id %in% wUsers) %>% 
+  dplyr::select(user_id, 
+                revisions_Aug2021, 
+                revision_count,
+                topic_char)
+tF2 <- topicFrame %>% 
+  dplyr::select(-user_id,
+                -revisions_Aug2021, 
+                -revision_count)
+ggplot(stack(tF2), 
+       ggplot2::aes(x = ind, 
+                    y = log(values), 
+                    fill = ind)) +
+  ggplot2::geom_boxplot() +
+  xlab("Features") + ylab("log(Revisions)") +
+  theme_bw() +
+  ggplot2::ggtitle("Topic 10: Features") + 
+  ggplot2::theme(panel.border = element_blank()) + 
+  ggplot2::theme(axis.text.x = element_text(size = 12, angle = 90, 
+                                            vjust=0.5, hjust=1)) + 
+  ggplot2::theme(axis.text.y = element_text(size = 12)) +
+  ggplot2::theme(axis.title.x = element_text(size = 12)) + 
+  ggplot2::theme(axis.title.y = element_text(size = 12)) +
+  ggplot2::theme(plot.title = element_text(size = 15, hjust = .5))
+```
+
+#### 3.5.7 Topic 12
+
+The top ten most important features in this topic are:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+sel_topic <- "topic12"
+w <- which(colnames(topicExplain) == sel_topic)
+topic_char <- topicExplain[, w]
+print(topic_char)
+```
+The distributions of revision features in this topic:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 12, fig.height = 8}
+wUsers <- solution_2d$user_id[which(solution_2d$topic == 12)]
+topicFrame <- dataSet %>% 
+  dplyr::filter(user_id %in% wUsers) %>% 
+  dplyr::select(user_id, 
+                revisions_Aug2021, 
+                revision_count,
+                topic_char)
+tF2 <- topicFrame %>% 
+  dplyr::select(-user_id,
+                -revisions_Aug2021, 
+                -revision_count)
+ggplot(stack(tF2), 
+       ggplot2::aes(x = ind, 
+                    y = log(values), 
+                    fill = ind)) +
+  ggplot2::geom_boxplot() +
+  xlab("Features") + ylab("log(Revisions)") +
+  theme_bw() +
+  ggplot2::ggtitle("Topic 12: Features") + 
+  ggplot2::theme(panel.border = element_blank()) + 
+  ggplot2::theme(axis.text.x = element_text(size = 12, angle = 90, 
+                                            vjust=0.5, hjust=1)) + 
+  ggplot2::theme(axis.text.y = element_text(size = 12)) +
+  ggplot2::theme(axis.title.x = element_text(size = 12)) + 
+  ggplot2::theme(axis.title.y = element_text(size = 12)) +
+  ggplot2::theme(plot.title = element_text(size = 15, hjust = .5))
+```
+
+#### 3.5.8 Topic 13
+
+The top ten most important features in this topic are:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+sel_topic <- "topic13"
+w <- which(colnames(topicExplain) == sel_topic)
+topic_char <- topicExplain[, w]
+print(topic_char)
+```
+The distributions of revision features in this topic:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 12, fig.height = 8}
+wUsers <- solution_2d$user_id[which(solution_2d$topic == 13)]
+topicFrame <- dataSet %>% 
+  dplyr::filter(user_id %in% wUsers) %>% 
+  dplyr::select(user_id, 
+                revisions_Aug2021, 
+                revision_count,
+                topic_char)
+tF2 <- topicFrame %>% 
+  dplyr::select(-user_id,
+                -revisions_Aug2021, 
+                -revision_count)
+ggplot(stack(tF2), 
+       ggplot2::aes(x = ind, 
+                    y = log(values), 
+                    fill = ind)) +
+  ggplot2::geom_boxplot() +
+  xlab("Features") + ylab("log(Revisions)") +
+  theme_bw() +
+  ggplot2::ggtitle("Topic 13: Features") + 
+  ggplot2::theme(panel.border = element_blank()) + 
+  ggplot2::theme(axis.text.x = element_text(size = 12, angle = 90, 
+                                            vjust=0.5, hjust=1)) + 
+  ggplot2::theme(axis.text.y = element_text(size = 12)) +
+  ggplot2::theme(axis.title.x = element_text(size = 12)) + 
+  ggplot2::theme(axis.title.y = element_text(size = 12)) +
+  ggplot2::theme(plot.title = element_text(size = 15, hjust = .5))
+```
