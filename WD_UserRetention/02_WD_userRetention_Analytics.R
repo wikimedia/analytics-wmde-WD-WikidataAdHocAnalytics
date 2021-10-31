@@ -1,5 +1,5 @@
 ### ---------------------------------------------------------------------------
-### --- 02_WD_userRetention_Analytics.R
+### --- 01_WD_userRetention_Analytics.R
 ### --- Author: Goran S. Milovanovic, Data Scientist, WMDE
 ### --- Developed under the contract between:
 ### --- Goran Milovanovic PR Data Kolektiv and WMDE.
@@ -8,7 +8,7 @@
 ### --- Phabricator reference: https://phabricator.wikimedia.org/T282563
 ### ---------------------------------------------------------------------------
 ### --- COMMENT:
-### --- R analytics procedures for the Wikidata User Retention project
+### --- R ETL procedures for the Wikidata User Retention project
 ### ---------------------------------------------------------------------------
 ### ---------------------------------------------------------------------------
 ### --- LICENSE:
@@ -429,7 +429,6 @@ powerLawSet$id <- 1:dim(powerLawSet)[1]
 
 # - account ages:
 powerLawSet$age <- nchar(powerLawSet$totalActiveMonths)
-# - ageFreq <- as.numeric(table(powerLawSet$age))
 
 # - boostrap_p: estimate xmin
 plEstimate <- displ$new(powerLawSet$age)
@@ -485,6 +484,7 @@ bs_p$p
 
 
 # - plots
+ageFreq <- as.numeric(table(powerLawSet$age))
 ageFreqFrame <- data.frame(freq = sort(ageFreq, decreasing = TRUE))
 ageFreqFrame$rank <- 1:dim(ageFreqFrame)[1]
 ggplot(ageFreqFrame, 
@@ -498,9 +498,12 @@ ggplot(ageFreqFrame,
   theme_bw() + 
   theme(panel.border = element_blank())
 
-totalAM_FreqFrame <- data.frame(freq = sort(totalAM_Freq, decreasing = TRUE))
-totalAM_FreqFrame$rank <- 1:dim(totalAM_FreqFrame)[1]
-ggplot(totalAM_FreqFrame, 
+totalAM_Freq_Table <- table(totalAM_Freq)
+totalAM_Freq_Table <- data.frame(freq = sort(totalAM_Freq_Table, 
+                                             decreasing = TRUE))
+totalAM_Freq_Table$rank <- 1:dim(totalAM_Freq_Table)[1]
+colnames(totalAM_Freq_Table) <- c("Obs", "freq", "rank")
+ggplot(totalAM_Freq_Table, 
        aes(x = log(rank),
            y = log(freq))) + 
   geom_smooth(method = "lm", color = "red", size = .25) +
@@ -844,23 +847,6 @@ ROC_results <- lapply(decBoundaries, function(x) {
 ROC_results <- rbindlist(ROC_results)
 head(ROC_results)
 ROC_results$diff <- ROC_results$tpr - ROC_results$fpr
-ROC_results$label <- ""
-ROC_results$label[which.max(ROC_results$diff)] <- "Here!"
-ggplot(data = ROC_results, 
-       aes(x = fpr, 
-           y = tpr, 
-           label = label)) +
-  geom_path(color = "red") + geom_abline(intercept = 0, slope = 1) +
-  geom_text_repel(arrow = arrow(length = unit(0.06, "inches"),
-                                ends = "last", 
-                                type = "closed"), 
-                  min.segment.length = unit(0, 'lines'),
-                  nudge_y = .1) + 
-  ggtitle("ROC analysis for the XGBoost Binary Classifier") +
-  xlab("Specificity (False Alarm Rate)") + ylab("Sensitivity (Hit Rate)") + 
-  xlim(0, 1) + ylim(0, 1) +
-  theme_bw() + 
-  theme(plot.title = element_text(hjust = .5))
 
 ### --- a posteriori analysis
 w <- which.max(ROC_results$diff)
