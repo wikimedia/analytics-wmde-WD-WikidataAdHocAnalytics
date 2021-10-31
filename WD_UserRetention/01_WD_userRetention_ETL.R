@@ -4,7 +4,7 @@
 ### --- Developed under the contract between:
 ### --- Goran Milovanovic PR Data Kolektiv and WMDE.
 ### --- Contact: goran.milovanovic_ext@wikimedia.de
-### --- July 2021.
+### --- October 2021.
 ### --- Phabricator reference: https://phabricator.wikimedia.org/T282563
 ### ---------------------------------------------------------------------------
 ### --- COMMENT:
@@ -35,10 +35,11 @@ library(data.table)
 library(tidyverse)
 
 ### --- dirTree
-dataDir <- 
-  "/home/goransm/Analytics/Wikidata/WD_misc/WD_UserRetention/_data/"
-analyticsDir <- 
-  "/home/goransm/Analytics/Wikidata/WD_misc/WD_UserRetention/_analytics/"
+workDir <- "/home/goransm/Analytics/adhoc/WD_UserRetention2021/"
+dataDir <- paste0(workDir, 
+                  "_data/")
+analyticsDir <- paste0(workDir,
+                       "_analytics/")
 
 ### --- ETL 1: namespaces 0, 120, 146
 
@@ -76,7 +77,7 @@ query <- 'USE wmf;
             page_is_redirect = FALSE AND 
             revision_is_deleted_by_page_deletion = FALSE AND 
             (page_namespace = 0 OR page_namespace = 120 OR page_namespace = 146) AND 
-            snapshot = \'2021-06\'
+            snapshot = \'2021-09\'
           ) 
           GROUP BY 
             event_user_id, 
@@ -87,7 +88,11 @@ write(query, paste0(dataDir, queryFile))
 out <- paste0("> ", dataDir, filename)
 
 # - Execute
-qCommand <- paste0(connect, '"', paste0(dataDir, queryFile), '" ', out)
+qCommand <- paste0(connect, 
+                   '"', 
+                   paste0(dataDir, queryFile), 
+                   '" ', 
+                   out)
 system(qCommand, wait = T)
 
 ### --- Wrangle source data 1: Data Namespaces (ETL 1)
@@ -163,14 +168,18 @@ query <- 'USE wmf;
             page_namespace = 1199 OR 
             page_namespace = 2301 OR 
             page_namespace = 2303) AND 
-            snapshot = \'2021-06\'
+            snapshot = \'2021-09\'
           ) 
           GROUP BY event_user_id;'
 write(query, paste0(dataDir, queryFile))
 out <- paste0("> ", dataDir, filename)
 
 # - Execute
-qCommand <- paste0(connect, '"', paste0(dataDir, queryFile), '" ', out)
+qCommand <- paste0(connect, 
+                   '"', 
+                   paste0(dataDir, queryFile), 
+                   '" ', 
+                   out)
 system(qCommand, wait = T)
 
 ### --- Wrangle source data 2: Talk Namespaces (ETL 2)
@@ -193,7 +202,8 @@ dataSet <- left_join(dataSet,
 dataSet$userId <- dataSet$anons
 dataSet$anons <- NULL
 write.csv(dataSet,
-          paste0(analyticsDir, "WD_UserRetention.csv"))
+          paste0(analyticsDir, 
+                 "WD_UserRetention.csv"))
 # - anonimize talkDataSet
 talkDataSet <- left_join(talkDataSet,
                      anons,
@@ -201,4 +211,5 @@ talkDataSet <- left_join(talkDataSet,
 talkDataSet$userId <- talkDataSet$anons
 talkDataSet$anons <- NULL
 write.csv(talkDataSet,
-          paste0(analyticsDir, "WD_UserRetention_TalkRevisions.csv"))
+          paste0(analyticsDir, 
+                 "WD_UserRetention_TalkRevisions.csv"))
