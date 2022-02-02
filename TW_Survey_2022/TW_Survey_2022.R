@@ -16,6 +16,9 @@ dataDir <- paste0(getwd(),
 analyticsDir <- paste0(getwd(),
                        "/_analytics/")
 
+# Sys.setenv(http_proxy = "http://webproxy.eqiad.wmnet:8080",
+#            https_proxy = "http://webproxy.eqiad.wmnet:8080")
+
 ### ------------------------------------------------------
 ### --- 1.New editors
 ### ------------------------------------------------------
@@ -360,4 +363,203 @@ ds[is.na(ds)] <- 0
 ds <- dplyr::arrange(ds, dplyr::desc(revisions))
 write.csv(ds, 
           "_analytics/TW_Survey_2021_Query4_SurveyRespondentRevisions.csv")
+
+
+### ------------------------------------------------------
+### --- 2. Casual Editors
+### ------------------------------------------------------
+
+### ----------------------------------------------------------------
+### --- etl phase
+
+### --- determine wmf.mediawiki_history snapshot
+# - Kerberos init
+WMDEData::kerberos_init(kerberosUser = "analytics-privatedata")
+# - Define query
+queryFile <- paste0(dataDir, 
+                    "snapshot_Query.hql")
+hiveQLquery <- "SHOW PARTITIONS wmf.mediawiki_history;"
+write(hiveQLquery, queryFile)
+# - Run HiveQL query
+filename <- "snapshot.tsv"
+WMDEData::kerberos_runHiveQL(kerberosUser = "analytics-privatedata",
+                             query = queryFile,
+                             localPath = dataDir,
+                             localFilename = filename)
+mwhistorySnapshot <- read.table(paste0(dataDir, filename),
+                                sep = "\t",
+                                stringsAsFactors = FALSE)
+mwhistorySnapshot <- tail(mwhistorySnapshot$V1, 1)
+mwhistorySnapshot <- 
+  stringr::str_extract(mwhistorySnapshot,
+                       "[[:digit:]]+-[[:digit:]]+") 
+
+### --- ETL
+# - Kerberos init
+WMDEData::kerberos_init()
+# - Query
+query <- paste0("SELECT 
+                  event_user_id AS user_id,
+                  event_user_text AS username,
+                  substring(event_timestamp, 1, 4) AS year,
+                  substring(event_timestamp, 6, 2) AS month,
+                  substring(event_timestamp, 9, 2) AS day, 
+                  COUNT(*) as count 
+                FROM wmf.mediawiki_history 
+                WHERE (
+                  event_entity = 'revision' AND 
+                  event_type = 'create' AND 
+                  wiki_db = 'dewiki' AND 
+                  event_user_is_anonymous = FALSE AND 
+                  NOT ARRAY_CONTAINS(user_is_bot_by, 'name') AND 
+                  NOT ARRAY_CONTAINS(user_is_bot_by, 'group') AND 
+                  NOT ARRAY_CONTAINS(user_is_bot_by_historical, 'name') AND 
+                  NOT ARRAY_CONTAINS(user_is_bot_by_historical, 'group') AND 
+                  page_namespace = 0 AND 
+                  page_is_redirect = FALSE AND 
+                  revision_is_deleted_by_page_deletion = FALSE AND
+                  event_timestamp > '2019-01-01 00:00:00.0' AND 
+                  snapshot = '", mwhistorySnapshot, "') 
+                GROUP BY 
+                  event_user_id, 
+                  event_user_text, 
+                  substring(event_timestamp, 1, 4), 
+                  substring(event_timestamp, 6, 2),  
+                  substring(event_timestamp, 9, 2);"
+)
+# - prepare to run HiveQL query
+queryFile <- "TW_Survey_2021_Query2_CasualEditors.hql"
+filename <- "TW_Survey_2021_Query2_CasualEditors.tsv"
+write(query, 
+      paste0(dataDir, queryFile))
+# - run HiveQL query
+WMDEData::kerberos_runHiveQL(kerberosUser = "analytics-privatedata",
+                             query = paste0(dataDir, queryFile),
+                             localPath = dataDir,
+                             localFilename = filename)
+
+### --- Analytics
+
+# - load
+dataSet <- data.table::fread(
+  paste0(
+    dataDir,
+    "TW_Survey_2021_Query2_CasualEditors.tsv")
+  )
+head(dataSet)
+dataSet$user <- paste0(dataSet$user_id,
+                       "_____", 
+                       dataSet$username)
+dataSet$user_id <- NULL
+dataSet$username <- NULL
+head(dataSet)
+dim(dataSet)
+
+# - remove users who were not active in:
+# - 2019, 2020, AND 2021
+active_users <- dataSet %>% 
+  dplyr::select(user, year) %>% 
+  dplyr::group_by(user) %>% 
+  dplyr::summarise(years = length(unique(year))) %>% 
+  dplyr::filter(years == 3)
+head(active_users)
+w <- which(dataSet$user %in% active_users$user)
+length(w)
+dataSet <- dataSet[w, ]
+dim(dataSet)
+
+# - total user edits
+userEditsFrame <- dataSet %>% 
+  dplyr::select(user, count) %>% 
+  dplyr::group_by(user) %>% 
+  dplyr::summarise(total_edits = sum(count)) %>% 
+  dplyr::arrange(dplyr::desc(total_edits))
+head(userEditsFrame)
+
+# - mean distance between active days
+# - add time units: months
+all_days <- 
+  seq(as.Date("2019/1/1"), as.Date("2021/10/31"), by = "day")
+all_days <- data.frame(date = as.character(all_days), 
+                       date_id = 1:length(all_days), 
+                       stringsAsFactors = FALSE)
+head(all_days)
+dataSet$month <- ifelse(nchar(dataSet$month) == 1,
+                        paste0("0", dataSet$month),
+                        dataSet$month)
+dataSet$day <- ifelse(nchar(dataSet$day) == 1,
+                      paste0("0", dataSet$day),
+                      dataSet$day)
+dataSet$date <- paste(dataSet$year,
+                      dataSet$month,
+                      dataSet$day,
+                      sep = "-")
+head(dataSet)
+dataSet <- dataSet %>% 
+  dplyr::left_join(all_days, 
+                   by = "date")
+head(dataSet)
+dataSet <- dataSet %>% 
+  dplyr::select(user, date_id)
+dataSet <- dataSet %>% 
+  dplyr::arrange(user, date_id)
+head(dataSet)
+length(unique(dataSet$user))
+
+
+library(snowfall)
+snowfall::sfInit(cpus = 30, parallel = TRUE)
+snowfall::sfExport("dataSet")
+snowfall::sfLibrary(dplyr)
+edit_frequency <- snowfall::sfLapply(unique(dataSet$user),
+                                     function(x) {
+                                       w <- which(dataSet$user == x)
+                                       d <- dataSet$date_id[w]
+                                       mean_dfs <- mean(diff(d))
+                                       total_edit_days = length(d)
+                                       return(
+                                         data.frame(
+                                           user = x,
+                                           total_edit_days = total_edit_days,
+                                           mean_dfs = mean_dfs,
+                                           stringsAsFactors = FALSE
+                                           )
+                                         )
+                                       })
+snowfall::sfStop()
+edit_frequency <- data.table::rbindlist(edit_frequency)
+edit_frequency <- edit_frequency %>% 
+  dplyr::arrange(mean_dfs)
+head(edit_frequency)
+edit_frequency <- edit_frequency %>% 
+  dplyr::left_join(userEditsFrame, 
+                   by = "user")
+head(edit_frequency)
+table(edit_frequency$mean_dfs)
+edit_frequency <- edit_frequency %>% 
+  dplyr::filter(mean_dfs >= 2)
+head(edit_frequency)
+dim(edit_frequency)
+edit_frequency$user <- 
+  gsub("^[[:digit:]]+_____", 
+       "",
+       edit_frequency$user)
+head(edit_frequency)
+edit_frequency$percent_days <- 
+  edit_frequency$total_edit_days/dim(all_days)[1]
+head(edit_frequency)
+edit_frequency <- edit_frequency %>% 
+  dplyr::select(user, 
+                percent_days,
+                mean_dfs,
+                total_edits)
+head(edit_frequency)
+edit_frequency <- edit_frequency %>% 
+  dplyr::arrange(mean_dfs)
+head(edit_frequency)
+write.csv(edit_frequency, 
+          "TW_Survey_2021_Query2_CasualUsers.csv")
+
+
+
 
